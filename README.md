@@ -1,6 +1,6 @@
 # Creator Studio
 
-**By Twilight Studio** · Version **0.14.0-beta.3** · Linux x64
+**By Twilight Studio** · Version **0.14.0-beta.4** · Linux x64
 
 A native Linux creative workspace where AI agents and manual tools share the same project.
 Model in 3D, simulate cloth, format writing, code with an AI agent, drive a live Unity Editor,
@@ -96,7 +96,18 @@ folder without root setup. A separate Windows build is available at
 2. Run `./creator-studio` from this folder.
 3. Enter your product key when the activation screen appears.
 
-To move the app to another location, copy the **entire folder**, not just the executable.
+Creator Studio opens as a proper resizable desktop window with the branded Creator Studio title
+bar (Home and window controls) and the applet header underneath. It works on desktop
+environments and tiling window managers alike.
+
+Always launch the bundled `creator-studio` executable. Opening the local backend URL in Chrome or
+Firefox only shows a browser preview: the browser cannot open native folder dialogs or install
+updates. The desktop window is the supported application.
+
+To move the app to another location, copy the **entire folder**, not just the executable. The
+in-app updater replaces this folder in place, so keep it in a writable location such as your home
+directory. It will refuse to update a read-only folder (for example a NixOS system path) and tell
+you where to move it.
 
 ---
 
@@ -140,16 +151,21 @@ support for 3D scene editing, coding, and GitHub actions.
 You can also configure provider API keys for OpenAI and Gemini in **Settings → Providers** if you
 want those providers in Research or Photo.
 
-### Optional Linux microphone engine
+### Linux microphone engine
 
-The voice feature uses Python 3 and the bundled speech scripts. Run once:
+The voice feature installs itself automatically on first launch. Creator Studio creates a private
+Python environment in `~/Documents/3D Creator Studio/speech-venv`, installs the speech packages in
+the background, and starts the engine when it is ready. It survives app updates, so it only has to
+be installed once.
 
-```text
-tools/speech/setup.sh
-```
+The installer needs Python 3 with `venv` and `pip` available on `PATH`. On Debian/Ubuntu install
+`python3-venv` if it is missing. PortAudio is also required by the microphone library
+(`libportaudio2` on Debian/Ubuntu; `portaudio` on NixOS). If the automatic install cannot finish,
+the app shows the reason in the microphone status and retries later.
 
-Restart Creator Studio afterwards. The app falls back to `python3` when a local virtual environment
-is not present.
+Typing prefers `wtype` on Wayland, then `ydotool` or `xdotool` on X11. If none is installed, the
+existing keyboard/pyautogui fallbacks are used. On Wayland, install `wtype` for reliable typing
+into other applications.
 
 ---
 
@@ -240,6 +256,10 @@ version and folder layout, keeps a backup named `Creator Studio backup <timestam
 application folder, swaps the files and relaunches Creator Studio automatically. Update activity is
 logged to `~/.local/state/creator-studio/update.log`.
 
+Press **Update now** on the home banner or in Settings → Updates. You do not need to visit GitHub
+or run any commands. The application folder must be writable; Creator Studio detects read-only
+locations (such as NixOS system folders) and tells you to move the folder into your home directory.
+
 Windows releases come from **CreatorStudio_WindowsOS** and use the Windows updater. If you installed
 the wrong platform, use the opposite-distribution link at the top of this file.
 
@@ -257,6 +277,16 @@ the wrong platform, use the opposite-distribution link at the top of this file.
 - Check `~/.local/state/creator-studio/update.log`.
 - Close any file manager or terminal that is sitting inside the application folder.
 - Keep the `Creator Studio backup <timestamp>` folder; it is the previous working build.
+- If the app says the folder is not writable, move the entire Creator Studio folder into your
+  home directory (for example `~/Creator Studio`) and press Update again. NixOS system paths and
+  other read-only locations cannot be updated in place.
+
+**The voice engine is still installing**
+- First launch downloads the speech packages once in the background. This can take several minutes.
+- If it reports that Python is missing, install Python 3 with `venv` support (`python3-venv` on
+  Debian/Ubuntu) and restart Creator Studio.
+- The microphone library also needs PortAudio (`libportaudio2` on Debian/Ubuntu, `portaudio` on
+  NixOS).
 
 **Blank or black window**
 - Update your graphics driver.

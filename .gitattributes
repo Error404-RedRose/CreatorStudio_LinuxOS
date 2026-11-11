@@ -1,3 +1,4 @@
 creator-studio filter=lfs diff=lfs merge=lfs -text
 *.sh text eol=lf
 *.sh text eol=lf
+*.sh text eol=lf
