@@ -46,15 +46,17 @@ The installer:
 - installs Creator Studio in `~/.local/opt/creator-studio`
 - adds a **Creator Studio** entry to your applications menu
 - creates the `creator-studio` command in `~/.local/bin`
-- launches the app when a desktop session is available
+- does **not** start a background copy, so it works safely from a terminal or SSH session
 
 No root password or distribution-specific package is required. The same file works on Debian, Ubuntu, Linux Mint, Pop!_OS, Fedora, Arch, openSUSE, NixOS user profiles and other x64 distributions.
 
-Add `--no-launch` if you only want to install:
+Launch Creator Studio from your applications menu, or run:
 
 ```bash
-~/Downloads/CreatorStudio-Linux-x64.run --no-launch
+creator-studio
 ```
+
+If `~/.local/bin` is not on your PATH, run `~/.local/opt/creator-studio/creator-studio`.
 
 ### Portable archive
 
@@ -127,18 +129,34 @@ you where to move it.
 
 ---
 
-## Uninstall
+## If no window appears
 
-If you used the one-file installer:
+- If an old background copy is stuck, stop it and launch again:
 
 ```bash
-rm -rf ~/.local/opt/creator-studio
-rm -f ~/.local/bin/creator-studio
-rm -f ~/.local/share/applications/creator-studio.desktop
-rm -f ~/.local/share/icons/hicolor/256x256/apps/creator-studio.png
+pkill -f "$HOME/.local/opt/creator-studio/creator-studio" || true
+creator-studio
 ```
 
-Your projects and settings stay in your Documents folder and are not removed.
+- Launch from a terminal to see the Electron output directly:
+
+```bash
+$HOME/.local/opt/creator-studio/creator-studio
+```
+
+- On Wayland, if the window still does not appear, try:
+
+```bash
+$HOME/.local/opt/creator-studio/creator-studio --ozone-platform-hint=auto
+```
+
+- On very old GPUs or virtual machines, try:
+
+```bash
+$HOME/.local/opt/creator-studio/creator-studio --disable-gpu
+```
+
+- Electron logs are written to `~/.config/Creator Studio/data/logs/`.
 
 ---
 
@@ -358,7 +376,15 @@ the wrong platform, use the opposite-distribution link at the top of this file.
 ## Uninstall
 
 1. Close Creator Studio.
-2. Delete this application folder.
+2. Remove the application:
+   - **One-file installer:**
+     ```bash
+     rm -rf ~/.local/opt/creator-studio
+     rm -f ~/.local/bin/creator-studio
+     rm -f ~/.local/share/applications/creator-studio.desktop
+     rm -f ~/.local/share/icons/hicolor/256x256/apps/creator-studio.png
+     ```
+   - **Portable archive:** delete the extracted folder.
 3. Optional: delete `~/Documents/3D Creator Studio` to remove settings, references, logs, and local
    AI history. This also removes your saved API keys and activation state.
 4. Optional: delete `~/.config/Creator Studio` if you want no residual Electron cache.
