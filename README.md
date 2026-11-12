@@ -173,6 +173,12 @@ CREATOR_STUDIO_SOFTWARE_GL=1 creator-studio
 CREATOR_STUDIO_GPU=1 creator-studio
 ```
 
+- If the app opens but the 3D, Clothworks or Animator applet reports a WebGL error, try the alternate SwiftShader GL backend:
+
+```bash
+CREATOR_STUDIO_GL=swiftshader creator-studio
+```
+
 - Electron logs are written to `~/.config/Creator Studio/data/logs/`.
 
 ---
