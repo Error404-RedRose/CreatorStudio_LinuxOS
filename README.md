@@ -1,6 +1,6 @@
 # Creator Studio
 
-**By Twilight Studio** · Version **0.14.0-beta.4** · Linux x64
+**By Twilight Studio** · Version **0.14.0-beta.5** · Linux x64
 
 A native Linux creative workspace where AI agents and manual tools share the same project.
 Model in 3D, simulate cloth, format writing, code with an AI agent, drive a live Unity Editor,
@@ -130,6 +130,19 @@ in-app updater replaces this folder in place, so keep it in a writable location 
 directory. It will refuse to update a read-only folder (for example a NixOS system path) and tell
 you where to move it.
 
+### Scale the interface
+
+Open **Settings > Appearance** and use **App scale** to resize the whole interface from 80% to
+150%. The setting is saved and applies to panels, dialogs, the launcher and the 3D viewport.
+You can also use **Ctrl + =**, **Ctrl + -** and **Ctrl + 0** from any applet. **Text scale** changes
+only the workspace text and is useful when the rest of the layout is already comfortable.
+
+For a system-wide scale, use your desktop's display settings:
+
+- **GNOME:** Settings > Displays > Scale
+- **KDE Plasma:** System Settings > Display & Monitor > Global Scale
+- **XFCE:** Settings > Appearance > Window Scaling
+
 ---
 
 ## If no window appears
@@ -231,19 +244,16 @@ want those providers in Research or Photo.
 
 ### Linux microphone engine
 
-The voice feature installs itself automatically on first launch. Creator Studio creates a private
-Python environment in `~/Documents/3D Creator Studio/speech-venv`, installs the speech packages in
-the background, and starts the engine when it is ready. It survives app updates, so it only has to
-be installed once.
+The voice feature installs itself automatically on first launch. Creator Studio downloads a
+private Python 3.11 runtime into `~/Documents/3D Creator Studio/speech-runtime` and creates its own
+speech environment in `~/Documents/3D Creator Studio/speech-venv`. No system Python, `pip`,
+PortAudio or distribution package is required. It survives app updates, so it only has to be
+installed once.
 
-The installer needs Python 3 with `venv` and `pip` available on `PATH`. On Debian/Ubuntu install
-`python3-venv` if it is missing. PortAudio is also required by the microphone library
-(`libportaudio2` on Debian/Ubuntu; `portaudio` on NixOS). If the automatic install cannot finish,
-the app shows the reason in the microphone status and retries later.
-
-Typing prefers `wtype` on Wayland, then `ydotool` or `xdotool` on X11. If none is installed, the
-existing keyboard/pyautogui fallbacks are used. On Wayland, install `wtype` for reliable typing
-into other applications.
+Linux capture uses PulseAudio/PipeWire through `soundcard`, which is available on every normal
+desktop, including NixOS. If a native `wtype`, `ydotool` or `xdotool` typing tool is unavailable,
+the finished transcript is inserted directly into the focused Creator Studio text field instead of
+being lost. On Wayland, install `wtype` if you also want dictation to type into other applications.
 
 ---
 
@@ -325,21 +335,24 @@ notes. Projects should be backed up separately.
 
 ## Updates
 
-Creator Studio checks the **CreatorStudio_LinuxOS** repository for a newer published version.
-When an update is available, the home page shows an update banner and **Settings → Updates** shows
-the release notes.
+Creator Studio checks the **CreatorStudio_LinuxOS** GitHub repository for a newer published version
+when the app starts and whenever **Settings → Updates** is opened. That tab shows the installed
+version, the published version, the exact repository being checked, the last check time and the
+latest release notes. On Windows the same tab checks **CreatorStudio_WindowsOS**.
 
 The Linux updater downloads the new unpacked build, restores any Git LFS files, verifies the
 version and folder layout, keeps a backup named `Creator Studio backup <timestamp>` beside the
-application folder, swaps the files and relaunches Creator Studio automatically. Update activity is
-logged to `~/.local/state/creator-studio/update.log`.
+application folder, swaps the files and relaunches Creator Studio through `creator-studio-launcher`
+so the software-rendering/WebGL environment is preserved. Update activity is logged to
+`~/.local/state/creator-studio/update.log`.
 
 Press **Update now** on the home banner or in Settings → Updates. You do not need to visit GitHub
 or run any commands. The application folder must be writable; Creator Studio detects read-only
 locations (such as NixOS system folders) and tells you to move the folder into your home directory.
 
-Windows releases come from **CreatorStudio_WindowsOS** and use the Windows updater. If you installed
-the wrong platform, use the opposite-distribution link at the top of this file.
+The current release is **0.14.0-beta.5**. If an older beta.4 installation does not offer the
+update, install the new `CreatorStudio-Linux-x64.run` once. After that, future releases can be
+installed from Settings → Updates.
 
 ---
 
@@ -360,11 +373,12 @@ the wrong platform, use the opposite-distribution link at the top of this file.
   other read-only locations cannot be updated in place.
 
 **The voice engine is still installing**
-- First launch downloads the speech packages once in the background. This can take several minutes.
-- If it reports that Python is missing, install Python 3 with `venv` support (`python3-venv` on
-  Debian/Ubuntu) and restart Creator Studio.
-- The microphone library also needs PortAudio (`libportaudio2` on Debian/Ubuntu, `portaudio` on
-  NixOS).
+- First launch downloads the private speech runtime and packages once in the background. This can
+  take several minutes on a slower connection.
+- Creator Studio does not need system Python, `pip` or PortAudio. If the runtime download is blocked
+  by a firewall, allow `github.com` and retry from **Settings > Microphone**.
+- If capture still fails, check that PipeWire or PulseAudio is running and that the microphone is
+  visible in your desktop sound settings.
 
 **Blank or black window**
 - Update your graphics driver.
