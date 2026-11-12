@@ -6,12 +6,34 @@ REPO="Error404-RedRose/CreatorStudio_LinuxOS"
 BRANCH="${TWIX_UPDATE_BRANCH:-main}"
 EXE="creator-studio"
 MEDIA="https://media.githubusercontent.com/media/${REPO}/${BRANCH}/${EXE}"
+RUN_URL="https://github.com/${REPO}/releases/latest/download/CreatorStudio-Linux-x64.run"
+
+download_file() {
+  url="$1"
+  destination="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl --fail --location --retry 5 --retry-delay 2 --progress-bar -o "$destination" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget --tries=5 --waitretry=2 --show-progress -O "$destination" "$url"
+  else
+    echo "ERROR: curl or wget is required to download Creator Studio." >&2
+    exit 1
+  fi
+}
 
 chmod +x chrome-sandbox chrome_crashpad_handler 2>/dev/null || true
 
 if [ ! -f "$EXE" ]; then
-  echo "ERROR: $EXE was not found next to install.sh."
-  exit 1
+  # Running install.sh outside the repository folder (or through curl | bash):
+  # fetch the one-file installer from the latest release instead of requiring
+  # a Git LFS clone. This keeps one command working on every distribution.
+  TMP_RUN="$(mktemp)"
+  trap 'rm -f "$TMP_RUN"' EXIT INT TERM
+  echo "Downloading the Creator Studio one-file installer..."
+  download_file "$RUN_URL" "$TMP_RUN"
+  chmod +x "$TMP_RUN"
+  "$TMP_RUN" "$@"
+  exit $?
 fi
 
 first_line="$(head -n 1 "$EXE" 2>/dev/null || true)"

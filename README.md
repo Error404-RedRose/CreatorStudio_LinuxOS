@@ -12,64 +12,80 @@ edit layered images, and run AI research — all from one desktop application.
 > The Linux and Windows repositories are separate. If you opened this page by mistake,
 > the link above takes you to the correct Windows distribution.
 
+> **Quick install:** [Download the one-file Linux installer](https://github.com/Error404-RedRose/CreatorStudio_LinuxOS/releases/latest/download/CreatorStudio-Linux-x64.run)
+
 ---
 
-## Downloading and installing from GitHub
+## Install on Linux
 
-The main executable is stored with **Git LFS** because it is larger than GitHub's
-100 MB file limit. A plain ZIP download contains a small **pointer file** instead of
-the real program, so use one of these methods.
+### Recommended: one-file installer
 
-### Recommended: clone with Git LFS
+This works on every x64 distribution without root access, Git, Git LFS, or a package manager.
 
-```text
-git lfs install
-git clone https://github.com/Error404-RedRose/CreatorStudio_LinuxOS.git
-cd CreatorStudio_LinuxOS
-git lfs pull
+1. Open the **[latest Linux release](https://github.com/Error404-RedRose/CreatorStudio_LinuxOS/releases/latest)**.
+2. Download **`CreatorStudio-Linux-x64.run`**.
+3. Make it executable and run it:
+
+```bash
+chmod +x ~/Downloads/CreatorStudio-Linux-x64.run
+~/Downloads/CreatorStudio-Linux-x64.run
+```
+
+Or mark the file as executable in your file manager and double-click it.
+
+Terminal one-liner instead of downloading the file manually:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Error404-RedRose/CreatorStudio_LinuxOS/main/install.sh | bash
+```
+
+The one-liner downloads the same `.run` installer from the latest release. You can inspect `install.sh` before running it.
+
+The installer:
+
+- installs Creator Studio in `~/.local/opt/creator-studio`
+- adds a **Creator Studio** entry to your applications menu
+- creates the `creator-studio` command in `~/.local/bin`
+- launches the app when a desktop session is available
+
+No root password or distribution-specific package is required. The same file works on Debian, Ubuntu, Linux Mint, Pop!_OS, Fedora, Arch, openSUSE, NixOS user profiles and other x64 distributions.
+
+Add `--no-launch` if you only want to install:
+
+```bash
+~/Downloads/CreatorStudio-Linux-x64.run --no-launch
+```
+
+### Portable archive
+
+Prefer not to install anything? Download **`CreatorStudio-Linux-x64.tar.gz`** from the same release page, extract it anywhere, and run:
+
+```bash
 chmod +x creator-studio
 ./creator-studio
 ```
 
-If the executable is still a small pointer file, run **`./install.sh`**. It detects the pointer,
-downloads the real binary from GitHub's LFS media endpoint, verifies its size, marks the Electron
-helpers executable, and starts Creator Studio.
+Keep the extracted folder intact. The in-app updater replaces that folder in place, so use a writable location such as your home directory.
 
-### ZIP download
+### Package managers
 
-1. Download the repository as a ZIP and extract it completely.
-2. Open a terminal in the extracted folder.
-3. Run **`./install.sh`**.
-4. The installer restores the complete executable and starts Creator Studio.
+Creator Studio uses one universal installer because a single package format cannot cover every Linux distribution. The `.run` installer does not require root and creates a normal desktop entry, so it behaves like an installed application. There is no need to add a third-party repository or compile anything.
 
-`install.sh` uses `git clone` plus `git lfs pull` when Git is installed. If Git is missing, it uses
-`curl` or `wget` to download the executable directly, so no developer tools are required.
-
-### Manual: single executable
-
-Open `creator-studio` on GitHub and use **Download** on the file page. Keep it in the same folder
-as the rest of the release files, then run:
-
-```text
-chmod +x creator-studio chrome-sandbox chrome_crashpad_handler install.sh
-./creator-studio
-```
+> **Advanced:** the repository still contains the unpacked build so the in-app updater can replace it. You do not need to clone the repository to install or use Creator Studio.
 
 ---
 
-## What's in this folder
+## What gets installed
 
 | Item | Description |
 | --- | --- |
-| `creator-studio` | The application. Run it from this folder. |
-| `install.sh` | Restores the full executable when the repository was downloaded as a ZIP. |
-| `resources/`, `locales/`, `*.so`, `*.pak`, `*.bin` | Required runtime files. Do not move or delete them. |
-| `README.md` | This document. |
-| `LICENSE.txt` | License terms for Creator Studio. |
-| `LICENSE.electron.txt`, `LICENSES.chromium.html` | Third-party license notices. |
+| `~/.local/opt/creator-studio/creator-studio` | The application executable. |
+| `~/.local/opt/creator-studio/resources/`, `locales/`, `*.so`, `*.pak` | Required runtime files. Keep them together. |
+| `~/.local/share/applications/creator-studio.desktop` | The applications-menu entry. |
+| `~/.local/bin/creator-studio` | Terminal launcher. |
+| `~/.local/share/icons/hicolor/256x256/apps/creator-studio.png` | Application icon. |
 
-Keep this folder intact. The executable depends on the shared libraries, `resources.pak`, `locales/`,
-and the other bundled files beside it — the app will not start if files are separated or moved out.
+If you use the portable archive instead, keep the extracted folder intact. The executable depends on the shared libraries, `resources.pak`, `locales/`, and the other bundled files beside it.
 
 > This is beta software. Back up important projects and expect interface changes between builds.
 
@@ -82,7 +98,7 @@ and the other bundled files beside it — the app will not start if files are se
 - A GPU and driver with **WebGL 2** support
 - **About 1 GB free disk space** for the application, plus room for projects
 - **Internet connection** for product activation, AI providers, GitHub, and updates
-- **One AI backend**: OpenCode, a local Hermes endpoint, or a local Claude-compatible endpoint
+- **One AI backend**: OpenCode (including Claude models exposed through OpenCode Go/Zen), a local Hermes endpoint, or a Claude-compatible endpoint
 
 The Linux build is unpacked and runs with Chromium's sandbox disabled so it works from any user-owned
 folder without root setup. A separate Windows build is available at
@@ -92,9 +108,9 @@ folder without root setup. A separate Windows build is available at
 
 ## Run the app
 
-1. If `creator-studio` is only a small pointer file, run `./install.sh` first.
-2. Run `./creator-studio` from this folder.
-3. Enter your product key when the activation screen appears.
+- **One-file installer:** open **Creator Studio** from your applications menu, or run `creator-studio` in a terminal.
+- **Portable archive:** run `./creator-studio` from the extracted folder.
+- Enter your product key when the activation screen appears.
 
 Creator Studio opens as a proper resizable desktop window with the branded Creator Studio title
 bar (Home and window controls) and the applet header underneath. It works on desktop
@@ -108,6 +124,21 @@ To move the app to another location, copy the **entire folder**, not just the ex
 in-app updater replaces this folder in place, so keep it in a writable location such as your home
 directory. It will refuse to update a read-only folder (for example a NixOS system path) and tell
 you where to move it.
+
+---
+
+## Uninstall
+
+If you used the one-file installer:
+
+```bash
+rm -rf ~/.local/opt/creator-studio
+rm -f ~/.local/bin/creator-studio
+rm -f ~/.local/share/applications/creator-studio.desktop
+rm -f ~/.local/share/icons/hicolor/256x256/apps/creator-studio.png
+```
+
+Your projects and settings stay in your Documents folder and are not removed.
 
 ---
 
@@ -134,15 +165,21 @@ approval flow and per-studio model memory.
 - **OpenCode** — install it from [opencode.ai](https://opencode.ai/), then open
   **Settings → OpenCode**. Creator Studio can provision a compatible 1.x runtime automatically.
 - **Hermes** — install Hermes from
-  [hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com/), start its local
-  OpenAI-compatible endpoint, then open **Settings → AI backends**, enable Hermes, and enter the
-  endpoint URL and model id.
-- **Claude** — install Claude from [claude.com/download](https://claude.com/download), start a
-  local Claude or Claude-compatible endpoint, then open **Settings → AI backends**, enable Claude,
-  choose OpenAI or Anthropic API style, and enter the endpoint URL and model id.
+  [hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com/). Creator Studio reads
+  Hermes's authenticated model providers directly (including the BlitzBoy models and Nous free
+  when its token is valid), so OpenCode's tools and approvals work normally. If Hermes is installed
+  but not signed in, open **Settings → AI backends** and configure it there.
+- **Claude** — install Claude from [claude.com/download](https://claude.com/download). Claude Code and
+  Claude Desktop are agents, not local model servers: they do not expose an HTTP model endpoint by
+  themselves. Run a Claude-compatible proxy, or enter the proxy URL in **Settings → AI backends**.
+  Creator Studio scans local ports and auto-fills a running Claude proxy when it finds one.
 
 Use **Test endpoint**, then **Save & reconnect agents**. The header model menu follows the active
 backend and shows only that backend's models. Auto-connect uses whichever backend you saved.
+
+When Ollama is running on this PC, Creator Studio also adds an **Ollama (local)** provider with
+every installed model. OpenCode Zen, OpenCode Go and Ollama Cloud models stay in the same model
+menu, so you can switch between free Zen models, Go models and local models without leaving the app.
 
 **Each workspace remembers its own model.** The model you select for Writing is used for Writing;
 the model you select for Coding is used for Coding, and so on. Choose models with tool calling
