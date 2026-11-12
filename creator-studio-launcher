@@ -1,0 +1,17 @@
+#!/bin/sh
+# Launcher for the unpacked Linux build. It keeps Creator Studio usable on
+# distributions without an FHS libEGL (for example NixOS) by falling back to
+# the bundled SwiftShader renderer.
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+FLAGS="--no-sandbox"
+
+if [ "${CREATOR_STUDIO_GPU:-0}" != "1" ]; then
+  SOFTWARE="${CREATOR_STUDIO_SOFTWARE_GL:-0}"
+  if [ "$SOFTWARE" = "1" ] || ! command -v ldconfig >/dev/null 2>&1 || ! ldconfig -p 2>/dev/null | grep -q 'libEGL\.so\.1'; then
+    FLAGS="$FLAGS --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader --disable-gpu-sandbox"
+  fi
+fi
+
+exec "$HERE/creator-studio" $FLAGS "$@"

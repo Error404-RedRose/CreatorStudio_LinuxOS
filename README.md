@@ -63,9 +63,11 @@ If `~/.local/bin` is not on your PATH, run `~/.local/opt/creator-studio/creator-
 Prefer not to install anything? Download **`CreatorStudio-Linux-x64.tar.gz`** from the same release page, extract it anywhere, and run:
 
 ```bash
-chmod +x creator-studio
-./creator-studio
+chmod +x creator-studio-launcher creator-studio
+./creator-studio-launcher
 ```
+
+`creator-studio-launcher` automatically falls back to the bundled SwiftShader renderer on NixOS or when `libEGL.so.1` is missing. On a normal desktop with working GPU drivers, running `./creator-studio` directly uses hardware rendering.
 
 Keep the extracted folder intact. The in-app updater replaces that folder in place, so use a writable location such as your home directory.
 
@@ -82,6 +84,7 @@ Creator Studio uses one universal installer because a single package format cann
 | Item | Description |
 | --- | --- |
 | `~/.local/opt/creator-studio/creator-studio` | The application executable. |
+| `~/.local/opt/creator-studio/creator-studio-launcher` | Launcher with the software-rendering fallback for NixOS/minimal systems. |
 | `~/.local/opt/creator-studio/resources/`, `locales/`, `*.so`, `*.pak` | Required runtime files. Keep them together. |
 | `~/.local/share/applications/creator-studio.desktop` | The applications-menu entry. |
 | `~/.local/bin/creator-studio` | Terminal launcher. |
@@ -154,6 +157,20 @@ $HOME/.local/opt/creator-studio/creator-studio --ozone-platform-hint=auto
 
 ```bash
 $HOME/.local/opt/creator-studio/creator-studio --disable-gpu
+```
+
+- On NixOS or minimal systems, the `libEGL.so.1` error is handled automatically by
+  `creator-studio-launcher`. The `creator-studio` command and the applications-menu entry already use
+  that launcher. To force software rendering explicitly:
+
+```bash
+CREATOR_STUDIO_SOFTWARE_GL=1 creator-studio
+```
+
+- To force hardware rendering on a system where the automatic detection chose software:
+
+```bash
+CREATOR_STUDIO_GPU=1 creator-studio
 ```
 
 - Electron logs are written to `~/.config/Creator Studio/data/logs/`.
