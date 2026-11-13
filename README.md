@@ -1,6 +1,6 @@
 # Creator Studio
 
-**By Twilight Studio** · Version **0.14.0-beta.15** · Linux x64
+**By Twilight Studio** · Version **0.14.0-beta.16** · Linux x64
 
 A native Linux creative workspace where AI agents and manual tools share the same project.
 Model in 3D, simulate cloth, format writing, code with an AI agent, drive a live Unity Editor,
@@ -383,13 +383,15 @@ Studio through `creator-studio-launcher`. If the one-shot download fails, it ret
 directly. If installation fails, the previous build is restored and restarted. If no graphical terminal
 emulator is installed, Creator Studio falls back to the headless systemd updater.
 
-Press **Update now** on the home banner or in Settings → Updates. You do not need to visit GitHub
-or run any commands yourself. The application folder must be writable; Creator Studio detects
-read-only locations (such as NixOS system folders) and tells you to move the folder into your home
-directory. Update activity is logged to `~/.local/state/creator-studio/update.log`, and a failed
-attempt is shown in Settings > Updates with that log path.
+Press **Update now** on the home banner or in Settings → Updates. If you are already on the latest
+version on Linux, **Settings → Updates → Reinstall in terminal** runs the same visible one-shot flow
+so you can verify or repair the installation. You do not need to visit GitHub or run any commands
+yourself. The application folder must be writable; Creator Studio detects read-only locations (such
+as NixOS system folders) and tells you to move the folder into your home directory. Update activity
+is logged to `~/.local/state/creator-studio/update.log`, and a failed attempt is shown in
+Settings > Updates with that log path.
 
-The current release is **0.14.0-beta.15**. If an older beta.4 or beta.5 installation does not offer the
+The current release is **0.14.0-beta.16**. If an older beta.4 or beta.5 installation does not offer the
 update, install the new `CreatorStudio-Linux-x64.run` once. After that, future releases can be
 installed from Settings → Updates.
 
