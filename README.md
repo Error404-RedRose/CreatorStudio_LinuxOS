@@ -1,6 +1,6 @@
 # Creator Studio
 
-**By Twilight Studio** · Version **0.14.0-beta.12** · Linux x64
+**By Twilight Studio** · Version **0.14.0-beta.13** · Linux x64
 
 A native Linux creative workspace where AI agents and manual tools share the same project.
 Model in 3D, simulate cloth, format writing, code with an AI agent, drive a live Unity Editor,
@@ -160,10 +160,20 @@ creator-studio
 $HOME/.local/opt/creator-studio/creator-studio
 ```
 
+The launcher prints the display backend, GPU choice and final Chromium flags. Electron then prints
+`[Creator Studio]` startup lines, and the backend prints `[server] [boot +…ms]` steps. The same
+lines are saved in `~/.config/Creator Studio/data/logs/`.
+
 - On Wayland, if the window still does not appear, try:
 
 ```bash
 $HOME/.local/opt/creator-studio/creator-studio --ozone-platform-hint=auto
+```
+
+- If the window is blank or the desktop compositor is stuck, start without GPU acceleration:
+
+```bash
+CREATOR_STUDIO_DISABLE_GPU=1 creator-studio
 ```
 
 - On very old GPUs or virtual machines, try:
@@ -244,11 +254,7 @@ want those providers in Research or Photo.
 
 ### Linux microphone engine
 
-The voice feature installs itself automatically on first launch. Creator Studio downloads a
-private Python 3.11 runtime into `~/Documents/3D Creator Studio/speech-runtime` and creates its own
-speech environment in `~/Documents/3D Creator Studio/speech-venv`. No system Python, `pip`,
-PortAudio or distribution package is required. It survives app updates, so it only has to be
-installed once.
+The voice engine installs the first time you use dictation or press **Prepare** in **Settings → Microphone**. It is **not** downloaded during application startup, so a slow or blocked download cannot hold up the Creator Studio window. Creator Studio downloads a private Python 3.11 runtime into `~/Documents/3D Creator Studio/speech-runtime` and creates its own speech environment in `~/Documents/3D Creator Studio/speech-venv`. No system Python, `pip`, PortAudio or distribution package is required. It survives app updates, so it only has to be installed once.
 
 Linux capture uses PulseAudio/PipeWire through `soundcard`, which is available on every normal
 desktop, including NixOS. If a native `wtype`, `ydotool` or `xdotool` typing tool is unavailable,
@@ -352,7 +358,7 @@ Press **Update now** on the home banner or in Settings → Updates. You do not n
 or run any commands. The application folder must be writable; Creator Studio detects read-only
 locations (such as NixOS system folders) and tells you to move the folder into your home directory.
 
-The current release is **0.14.0-beta.12**. If an older beta.4 or beta.5 installation does not offer the
+The current release is **0.14.0-beta.13**. If an older beta.4 or beta.5 installation does not offer the
 update, install the new `CreatorStudio-Linux-x64.run` once. After that, future releases can be
 installed from Settings → Updates.
 
@@ -364,7 +370,8 @@ installed from Settings → Updates.
 - Confirm the executable is still inside this folder with its shared libraries, `resources`, and `locales`.
 - Re-extract or re-copy the complete build if files were moved or deleted.
 - Run `chmod +x creator-studio chrome-sandbox chrome_crashpad_handler`.
-- Start it from a terminal to see the exact library error: `./creator-studio`.
+- Start it from a terminal to see the exact error and the `[boot]` startup steps: `./creator-studio`.
+- If the process starts but no window paints, try `CREATOR_STUDIO_DISABLE_GPU=1 ./creator-studio`.
 
 **The updater stops or the folder is not replaced**
 - Check `~/.local/state/creator-studio/update.log`.
@@ -375,7 +382,9 @@ installed from Settings → Updates.
   other read-only locations cannot be updated in place.
 
 **The voice engine is still installing**
-- First launch downloads the private speech runtime and packages once in the background. This can
+- Installation starts when you first use dictation or press **Prepare** in **Settings → Microphone**;
+  it does not run during application startup.
+- The first use downloads the private speech runtime and packages once in the background. This can
   take several minutes on a slower connection.
 - Creator Studio does not need system Python, `pip` or PortAudio. If the runtime download is blocked
   by a firewall, allow `github.com` and retry from **Settings > Microphone**.
