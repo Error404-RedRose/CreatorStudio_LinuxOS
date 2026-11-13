@@ -1,16 +1,33 @@
 #!/bin/sh
 # Launcher for the unpacked Linux build. It keeps Creator Studio usable on
-# distributions without an FHS libEGL (for example NixOS) by falling back to
-# the bundled SwiftShader renderer, and prints the startup choices so a user
-# launching from a terminal can see what is happening.
+# distributions without an FHS libEGL (for example NixOS) by using the active
+# NixOS GPU driver set, falling back to bundled SwiftShader only when needed,
+# and printing the startup choices so a terminal launch is diagnosable.
 set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-FLAGS="--no-sandbox --disable-dev-shm-usage"
+FLAGS="--no-sandbox --disable-dev-shm-usage --class=creator-studio --name=creator-studio"
 USE_SOFTWARE=0
+HAS_EGL=0
 DISABLE_GPU="${CREATOR_STUDIO_DISABLE_GPU:-0}"
 
 printf '%s\n' "[Creator Studio] launcher: $HERE" >&2
+
+# NixOS exposes the active GPU driver set here instead of the FHS paths.
+if [ -f /run/opengl-driver/lib/libEGL.so.1 ]; then
+  LD_LIBRARY_PATH="/run/opengl-driver/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export LD_LIBRARY_PATH
+  if [ -d /run/opengl-driver/lib/dri ]; then
+    LIBGL_DRIVERS_PATH="/run/opengl-driver/lib/dri${LIBGL_DRIVERS_PATH:+:$LIBGL_DRIVERS_PATH}"
+    export LIBGL_DRIVERS_PATH
+  fi
+  if [ -d /run/opengl-driver/share/glvnd/egl_vendor.d ]; then
+    __EGL_VENDOR_LIBRARY_DIRS="/run/opengl-driver/share/glvnd/egl_vendor.d"
+    export __EGL_VENDOR_LIBRARY_DIRS
+  fi
+  HAS_EGL=1
+  printf '%s\n' "[Creator Studio] GPU: NixOS drivers at /run/opengl-driver/lib" >&2
+fi
 
 # Wayland-only sessions must not wait for an X server. With both backends
 # present, let Chromium choose the active desktop session.
@@ -27,21 +44,34 @@ if [ "$DISABLE_GPU" = "1" ]; then
   printf '%s\n' "[Creator Studio] GPU: disabled by CREATOR_STUDIO_DISABLE_GPU=1" >&2
 elif [ "${CREATOR_STUDIO_GPU:-0}" != "1" ]; then
   SOFTWARE="${CREATOR_STUDIO_SOFTWARE_GL:-0}"
-  if [ "$SOFTWARE" = "1" ] || ! command -v ldconfig >/dev/null 2>&1 || ! ldconfig -p 2>/dev/null | grep -q 'libEGL\.so\.1'; then
+  if [ "$SOFTWARE" = "1" ]; then
     USE_SOFTWARE=1
+  elif [ "$HAS_EGL" = "1" ]; then
+    USE_SOFTWARE=0
+  elif ! command -v ldconfig >/dev/null 2>&1 || ! ldconfig -p 2>/dev/null | grep -q 'libEGL\.so\.1'; then
+    USE_SOFTWARE=1
+  fi
+  if [ "$USE_SOFTWARE" = "1" ]; then
     if [ "${CREATOR_STUDIO_GL:-}" = "swiftshader" ]; then
       GLFLAGS="--use-gl=swiftshader"
     else
       GLFLAGS="--use-gl=angle --use-angle=swiftshader"
     fi
     FLAGS="$FLAGS $GLFLAGS --enable-unsafe-swiftshader --disable-gpu-sandbox --ignore-gpu-blocklist --enable-webgl"
-    printf '%s\n' "[Creator Studio] GPU: bundled SwiftShader (system libEGL not detected)" >&2
+    printf '%s\n' "[Creator Studio] GPU: bundled SwiftShader (no usable system EGL)" >&2
   else
     printf '%s\n' "[Creator Studio] GPU: system EGL" >&2
   fi
 else
   printf '%s\n' "[Creator Studio] GPU: system EGL (forced by CREATOR_STUDIO_GPU=1)" >&2
 fi
+
+if [ "$USE_SOFTWARE" = "1" ] || [ "$DISABLE_GPU" = "1" ]; then
+  TWIX_SOFTWARE_RENDERING=1
+else
+  TWIX_SOFTWARE_RENDERING=0
+fi
+export TWIX_SOFTWARE_RENDERING
 
 # The SwiftShader Vulkan manifest uses a relative library path, and the app
 # finds its resources relative to the install directory.

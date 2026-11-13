@@ -1,6 +1,6 @@
 # Creator Studio
 
-**By Twilight Studio** · Version **0.14.0-beta.13** · Linux x64
+**By Twilight Studio** · Version **0.14.0-beta.14** · Linux x64
 
 A native Linux creative workspace where AI agents and manual tools share the same project.
 Model in 3D, simulate cloth, format writing, code with an AI agent, drive a live Unity Editor,
@@ -67,7 +67,7 @@ chmod +x creator-studio-launcher creator-studio
 ./creator-studio-launcher
 ```
 
-`creator-studio-launcher` automatically falls back to the bundled SwiftShader renderer on NixOS or when `libEGL.so.1` is missing. On a normal desktop with working GPU drivers, running `./creator-studio` directly uses hardware rendering.
+`creator-studio-launcher` uses NixOS's active `/run/opengl-driver/lib` GPU libraries when they are available, then falls back to the bundled SwiftShader renderer only when no usable EGL/OpenGL driver exists. On a normal desktop with working GPU drivers, running `./creator-studio` directly also uses hardware rendering.
 
 Keep the extracted folder intact. The in-app updater replaces that folder in place, so use a writable location such as your home directory.
 
@@ -182,12 +182,37 @@ CREATOR_STUDIO_DISABLE_GPU=1 creator-studio
 $HOME/.local/opt/creator-studio/creator-studio --disable-gpu
 ```
 
-- On NixOS or minimal systems, the `libEGL.so.1` error is handled automatically by
-  `creator-studio-launcher`. The `creator-studio` command and the applications-menu entry already use
-  that launcher. To force software rendering explicitly:
+- On NixOS or minimal systems, `creator-studio-launcher` automatically uses
+  `/run/opengl-driver/lib` when it exists. The `creator-studio` command and the applications-menu
+  entry already use that launcher. To force software rendering explicitly:
 
 ```bash
 CREATOR_STUDIO_SOFTWARE_GL=1 creator-studio
+```
+
+- If the launcher reports **SwiftShader** on a machine with a working GPU, enable graphics in your
+  NixOS configuration (`hardware.graphics.enable = true`) and make sure `/run/opengl-driver/lib`
+  exists. You can force hardware rendering with:
+
+```bash
+CREATOR_STUDIO_GPU=1 creator-studio
+```
+
+### Window border on NixOS
+
+A blue rectangular outline around the window is drawn by the **compositor**, not by Creator Studio.
+Sway and Hyprland draw a focus border around every window. To remove it for Creator Studio:
+
+**Sway** (`~/.config/sway/config`):
+
+```text
+for_window [app_id="creator-studio"] border none
+```
+
+**Hyprland** (`~/.config/hypr/hyprland.conf`):
+
+```text
+windowrulev2 = no_border,class:^(creator-studio)$
 ```
 
 - To force hardware rendering on a system where the automatic detection chose software:
@@ -358,7 +383,7 @@ Press **Update now** on the home banner or in Settings → Updates. You do not n
 or run any commands. The application folder must be writable; Creator Studio detects read-only
 locations (such as NixOS system folders) and tells you to move the folder into your home directory.
 
-The current release is **0.14.0-beta.13**. If an older beta.4 or beta.5 installation does not offer the
+The current release is **0.14.0-beta.14**. If an older beta.4 or beta.5 installation does not offer the
 update, install the new `CreatorStudio-Linux-x64.run` once. After that, future releases can be
 installed from Settings → Updates.
 
