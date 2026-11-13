@@ -1,6 +1,6 @@
 # Creator Studio
 
-**By Twilight Studio** · Version **0.14.0-beta.14** · Linux x64
+**By Twilight Studio** · Version **0.14.0-beta.15** · Linux x64
 
 A native Linux creative workspace where AI agents and manual tools share the same project.
 Model in 3D, simulate cloth, format writing, code with an AI agent, drive a live Unity Editor,
@@ -371,19 +371,25 @@ when the app starts and whenever **Settings → Updates** is opened. That tab sh
 version, the published version, the exact repository being checked, the last check time and the
 latest release notes. On Windows the same tab checks **CreatorStudio_WindowsOS**.
 
-The Linux updater downloads the new unpacked build, restores any Git LFS files, verifies the
-version and folder layout, keeps a backup named `Creator Studio backup <timestamp>` beside the
-application folder, swaps the files and relaunches Creator Studio through `creator-studio-launcher`
-so the software-rendering/WebGL environment is preserved. On systemd desktops it runs as a
-transient **systemd user service**, which keeps it alive after Creator Studio closes. Update
-activity is logged to `~/.local/state/creator-studio/update.log`, and a failed attempt is shown in
-Settings > Updates with that log path.
+The Linux updater now opens a **visible terminal window** and runs the official one-shot installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Error404-RedRose/CreatorStudio_LinuxOS/main/install.sh | bash
+```
+
+It moves the previous installation to `~/.local/opt/creator-studio.backup-<timestamp>`, downloads the
+latest `.run` package with visible progress, installs it, verifies the version and relaunches Creator
+Studio through `creator-studio-launcher`. If the one-shot download fails, it retries the `.run` package
+directly. If installation fails, the previous build is restored and restarted. If no graphical terminal
+emulator is installed, Creator Studio falls back to the headless systemd updater.
 
 Press **Update now** on the home banner or in Settings → Updates. You do not need to visit GitHub
-or run any commands. The application folder must be writable; Creator Studio detects read-only
-locations (such as NixOS system folders) and tells you to move the folder into your home directory.
+or run any commands yourself. The application folder must be writable; Creator Studio detects
+read-only locations (such as NixOS system folders) and tells you to move the folder into your home
+directory. Update activity is logged to `~/.local/state/creator-studio/update.log`, and a failed
+attempt is shown in Settings > Updates with that log path.
 
-The current release is **0.14.0-beta.14**. If an older beta.4 or beta.5 installation does not offer the
+The current release is **0.14.0-beta.15**. If an older beta.4 or beta.5 installation does not offer the
 update, install the new `CreatorStudio-Linux-x64.run` once. After that, future releases can be
 installed from Settings → Updates.
 
