@@ -1,6 +1,6 @@
 # Creator Studio
 
-**By Twilight Studio** · Version **0.14.0-beta.57** · Linux x64
+**By Twilight Studio** · Version **0.14.0-beta.58** · Linux x64
 
 A native Linux creative workspace where AI agents and manual tools share the same project.
 Model in 3D, simulate cloth, format writing, code with an AI agent, drive a live Unity Editor,
@@ -367,6 +367,25 @@ tokens redacted.
 Back up `~/Documents/3D Creator Studio` if you want to keep your settings, references, and learning
 notes. Projects should be backed up separately.
 
+### Live diagnostics and lag reports
+
+Run **`bash run-with-logs.sh`** from the application folder to start Creator Studio with verbose
+logging and stream the live main, backend, renderer, GPU and driver log into the terminal. Close the
+terminal when you are finished; Creator Studio keeps running.
+
+- The wrapper saves the full console stream as `console-*.log` in
+  `~/.config/Creator Studio/data/logs/`, next to the structured `electron-<date>.jsonl` log.
+- It enables `ELECTRON_ENABLE_LOGGING=1` and `ELECTRON_ENABLE_STACK_DUMPING=1`, so Chromium and GPU
+  driver messages, Wayland/X11 errors and native stack traces appear in the shell.
+- Every run records the app, Electron, Chrome and Node versions, distribution release, CPU, memory,
+  display layout, X11/Wayland session, desktop environment, GPU feature status, GPU driver details,
+  renderer warnings and errors, preload errors, crashed or unresponsive processes, long main-thread
+  tasks and event-loop stalls.
+- For a lag report, run `bash run-with-logs.sh`, reproduce the lag, close Creator Studio, then send
+  the newest `console-*.log` and `electron-*.jsonl` files.
+- To do the same manually, export `TWIX_LOG_STDOUT=1`, `TWIX_VERBOSE=1`,
+  `CREATOR_STUDIO_VERBOSE=1` and `ELECTRON_ENABLE_LOGGING=1` before launching `creator-studio`.
+
 ---
 
 ## Updates
@@ -396,7 +415,7 @@ as NixOS system folders) and tells you to move the folder into your home directo
 is logged to `~/.local/state/creator-studio/update.log`, and a failed attempt is shown in
 Settings > Updates with that log path.
 
-The current release is **0.14.0-beta.57**. If an older beta.4 or beta.5 installation does not offer the
+The current release is **0.14.0-beta.58**. If an older beta.4 or beta.5 installation does not offer the
 update, install the new `CreatorStudio-Linux-x64.run` once. After that, future releases can be
 installed from Settings → Updates.
 
