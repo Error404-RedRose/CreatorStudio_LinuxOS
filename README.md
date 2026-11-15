@@ -1,6 +1,6 @@
 # Creator Studio
 
-**By Twilight Studio** · Version **0.14.0-beta.52** · Linux x64
+**By Twilight Studio** · Version **0.14.0-beta.54** · Linux x64
 
 A native Linux creative workspace where AI agents and manual tools share the same project.
 Model in 3D, simulate cloth, format writing, code with an AI agent, drive a live Unity Editor,
@@ -396,7 +396,7 @@ as NixOS system folders) and tells you to move the folder into your home directo
 is logged to `~/.local/state/creator-studio/update.log`, and a failed attempt is shown in
 Settings > Updates with that log path.
 
-The current release is **0.14.0-beta.52**. If an older beta.4 or beta.5 installation does not offer the
+The current release is **0.14.0-beta.54**. If an older beta.4 or beta.5 installation does not offer the
 update, install the new `CreatorStudio-Linux-x64.run` once. After that, future releases can be
 installed from Settings → Updates.
 
