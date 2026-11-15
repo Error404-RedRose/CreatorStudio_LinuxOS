@@ -498,6 +498,36 @@ export const tools = [
     },
   },
   {
+    name: "sketch_reverse_faces",
+    category: "modeling",
+    mutating: true,
+    description:
+      "Invert the normal direction of one or more sketch faces. Pass faceIds, or omit them to reverse the current face selection. This is the same multi-face invert used by the right-click menu.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        faceIds: { type: "array", items: { type: "string" } },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "sketch_set_visibility",
+    category: "selection",
+    mutating: true,
+    description:
+      "Hide or show sketch faces, sketch groups, the sketch model, or imported objects by id. This is the Outliner eyeball action and accepts several ids for one undo step.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ids: { type: "array", items: { type: "string" } },
+        visible: { type: "boolean", description: "true shows, false hides." },
+      },
+      required: ["ids", "visible"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "sketch_paint_faces",
     category: "material",
     mutating: true,
