@@ -1,6 +1,6 @@
 # Creator Studio
 
-**By Twilight Studio** · Version **0.14.0-beta.74** · Linux x64
+**By Twilight Studio** · Version **0.14.0-beta.76** · Linux x64
 
 A native Linux creative workspace where AI agents and manual tools share the same project.
 Model in 3D, simulate cloth, format writing, code with an AI agent, drive a live Unity Editor,
@@ -401,10 +401,11 @@ The Linux updater now opens a **visible terminal window** and runs the official 
 curl -fsSL https://raw.githubusercontent.com/Error404-RedRose/CreatorStudio_LinuxOS/main/install.sh | bash
 ```
 
-It moves the previous installation to `~/.local/opt/creator-studio.backup-<timestamp>`, downloads the
+It moves the previous installation into a temporary rollback folder while the update runs, downloads the
 latest `.run` package with visible progress, installs it, verifies the version and relaunches Creator
 Studio through `creator-studio-launcher`. If the one-shot download fails, it retries the `.run` package
-directly. If installation fails, the previous build is restored and restarted. If no graphical terminal
+directly. If installation fails, the previous build is restored and restarted. After a successful update,
+the temporary rollback folder is deleted so backup folders do not pile up. If no graphical terminal
 emulator is installed, Creator Studio falls back to the headless systemd updater.
 
 Press **Update now** on the home banner or in Settings → Updates. If you are already on the latest
@@ -415,7 +416,7 @@ as NixOS system folders) and tells you to move the folder into your home directo
 is logged to `~/.local/state/creator-studio/update.log`, and a failed attempt is shown in
 Settings > Updates with that log path.
 
-The current release is **0.14.0-beta.74**. If an older beta.4 or beta.5 installation does not offer the
+The current release is **0.14.0-beta.76**. If an older beta.4 or beta.5 installation does not offer the
 update, install the new `CreatorStudio-Linux-x64.run` once. After that, future releases can be
 installed from Settings → Updates.
 
@@ -433,7 +434,8 @@ installed from Settings → Updates.
 **The updater stops or the folder is not replaced**
 - Check `~/.local/state/creator-studio/update.log`.
 - Close any file manager or terminal that is sitting inside the application folder.
-- Keep the `Creator Studio backup <timestamp>` folder; it is the previous working build.
+- You do not need to keep a `Creator Studio backup <timestamp>` folder; successful updates delete it.
+  If an update fails, the previous build is restored automatically.
 - If the app says the folder is not writable, move the entire Creator Studio folder into your
   home directory (for example `~/Creator Studio`) and press Update again. NixOS system paths and
   other read-only locations cannot be updated in place.
