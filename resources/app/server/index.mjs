@@ -11,6 +11,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createLicenseService } from "./license.mjs";
 import { createModService } from "./mods.mjs";
+import { registerForumRoutes } from "./forum.mjs";
 import { createSpeechService } from "./speech.mjs";
 import { MATERIALIZE_MAPS, materializeTextureFile } from "./materialize.mjs";
 import { discoverLocalAiEndpoints, ensureHermesApiServer, readHermesDirectProviders } from "./ai-endpoints.mjs";
@@ -177,7 +178,12 @@ const CHAT_WS_URL =
 const CHAT_SERVER_USER = process.env.TWIX_LICENSE_USER || "admin";
 const CHAT_SERVER_PASS = process.env.TWIX_LICENSE_PASS || "380112";
 const CHAT_TOKEN_TTL = 10 * 60 * 1000;
-const CHAT_CHANNEL_NAME = "CreatorStudio.Main";
+const CHAT_DEFAULT_STUDIO_NAME = "Twilight Studio";
+const CHAT_DEFAULT_STUDIO_SLUG = "TwilightStudio";
+const CHAT_DEFAULT_STUDIO_ID = "studio:TwilightStudio";
+const CHAT_CHANNEL_NAME = "TwilightStudio.Main";
+// Keep the legacy id: every existing message is stored against this channel.
+// Renaming the record keeps the history and makes the app show the new name.
 const CHAT_CHANNEL_ID = "global:CreatorStudio:CreatorStudio.Main";
 const CHAT_MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024;
 const CHAT_FILE_TTL_MS = 10 * 60 * 1000;
@@ -4582,18 +4588,34 @@ async function chatServerToken(force = false) {
   if (!force && chatTokenCache.token && Date.now() - chatTokenCache.at < CHAT_TOKEN_TTL) {
     return chatTokenCache.token;
   }
-  const response = await fetch(CHAT_SERVER_URL + "/api/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
-    body: JSON.stringify({ username: CHAT_SERVER_USER, password: CHAT_SERVER_PASS }),
-    signal: AbortSignal.timeout(12000),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data?.token) {
-    throw new Error("Chat server login failed (HTTP " + response.status + ").");
+  const loginPaths = ["/api/login", "/login", "/api/auth/login"];
+  let lastStatus = 0;
+  let lastError = "";
+  for (const loginPath of loginPaths) {
+    try {
+      const response = await fetch(CHAT_SERVER_URL + loginPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+        body: JSON.stringify({ username: CHAT_SERVER_USER, password: CHAT_SERVER_PASS }),
+        signal: AbortSignal.timeout(12000),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data?.token) {
+        chatTokenCache = { token: String(data.token), at: Date.now() };
+        return chatTokenCache.token;
+      }
+      lastStatus = response.status;
+      lastError = String(data?.error || data?.message || "");
+      // Only walk to the next route when the endpoint itself is missing.
+      if (response.status !== 404 && response.status !== 405) break;
+    } catch (error) {
+      lastError = String(error?.message || error);
+    }
   }
-  chatTokenCache = { token: String(data.token), at: Date.now() };
-  return chatTokenCache.token;
+  throw new Error(
+    "Chat server login failed (HTTP " + (lastStatus || "offline") + ") at " + CHAT_SERVER_URL + "." +
+      (lastError ? " " + lastError : ""),
+  );
 }
 
 async function chatServerFetch(pathname, options = {}) {
@@ -4629,54 +4651,647 @@ app.get("/api/chat/config", (req, res) => {
     fileTtlMs: CHAT_FILE_TTL_MS,
     maxFileBytes: CHAT_MAX_FILE_BYTES,
     defaultBandwidthKbps: 4096,
+    defaultStudio: CHAT_DEFAULT_STUDIO_ID,
+    defaultStudioSlug: CHAT_DEFAULT_STUDIO_SLUG,
   });
 });
 
-async function ensureChatChannel() {
-  const data = await chatServerFetch("/api/bitboy_chat_channels");
-  const records = data.records || {};
-  const found = Object.entries(records).find(([id, channel]) => {
-    const name = String(channel.n || channel.name || "").toLowerCase();
-    return id === CHAT_CHANNEL_ID || name === CHAT_CHANNEL_NAME.toLowerCase();
-  });
-  if (found) {
-    const [id, channel] = found;
-    return {
-      id: channel.id || channel.__id || id,
-      name: channel.n || channel.name || CHAT_CHANNEL_NAME,
-      type: channel.t || channel.type || "global",
-      server: channel.sv || channel.server || "CreatorStudio",
-      description: channel.d || channel.desc || "Creator Studio developer chat and direct file transfer",
-      position: Number(channel.pos || 0),
-    };
-  }
-  const created = await chatServerFetch("/api/bitboy_chat_channels", {
-    method: "POST",
-    body: {
-      id: CHAT_CHANNEL_ID,
-      n: CHAT_CHANNEL_NAME,
-      t: "global",
-      sv: "CreatorStudio",
-      d: "Creator Studio developer chat and direct file transfer",
-      pos: 0,
-    },
-  });
+function chatRecordEntries(data) {
+  return Object.entries(data?.records || {}).map(([id, row]) => ({
+    ...row,
+    id: String(row?.__id || row?.id || id),
+  }));
+}
+
+function chatStudioSlugify(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+}
+
+function chatStudioPascal(value) {
+  return (
+    String(value || "")
+      .trim()
+      .replace(/[^a-zA-Z0-9]+/g, "")
+      .slice(0, 28) || "Studio"
+  );
+}
+
+function chatChannelFromRow(row, fallbackName = "") {
+  const id = String(row.id || row.__id || "");
+  const name = String(row.n || row.name || fallbackName || "channel");
   return {
-    id: created.id || created.__id || CHAT_CHANNEL_ID,
-    name: created.n || CHAT_CHANNEL_NAME,
-    type: created.t || "global",
-    server: created.sv || "CreatorStudio",
-    description: created.d || "Creator Studio developer chat and direct file transfer",
-    position: 0,
+    id,
+    name,
+    type: String(row.t || row.type || "global"),
+    server: String(row.sv || row.server || CHAT_DEFAULT_STUDIO_SLUG),
+    description: String(row.d || row.desc || ""),
+    position: Number(row.pos || 0),
+    main:
+      Boolean(row.main) ||
+      /.main$/i.test(name) ||
+      id === CHAT_CHANNEL_ID,
   };
 }
 
-app.get("/api/chat/channels", async (req, res) => {
+function chatStudioFromRow(row, channelRows) {
+  const slug =
+    String(row.sv || row.slug || "").trim() || chatStudioPascal(row.n || row.name);
+  const studioId = String(row.id || row.__id || "studio:" + slug);
+  const channels = (channelRows || [])
+    .filter((channel) => {
+      const recordId = String(channel.id || "");
+      if (recordId === studioId || recordId.startsWith("studio:")) return false;
+      if (String(channel.t || channel.type || "").toLowerCase() === "dm") return false;
+      const channelStudio = String(channel.studio || "").trim();
+      const channelServer = String(channel.sv || channel.server || "").trim();
+      return (
+        channelStudio === studioId ||
+        channelServer.toLowerCase() === slug.toLowerCase()
+      );
+    })
+    .map((channel) => chatChannelFromRow(channel))
+    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  const mainId = String(row.main || "").trim();
+  const main =
+    channels.find((channel) => channel.id === mainId) ||
+    channels.find((channel) => channel.main) ||
+    channels[0];
+  return {
+    id: studioId,
+    slug,
+    name: String(row.n || row.name || slug),
+    owner: String(row.owner || row.o || ""),
+    description: String(row.d || row.desc || ""),
+    mainChannel: main?.id || mainId || "",
+    channels,
+    members: Number(row.members || 0),
+    createdAt: row.__created_at || "",
+  };
+}
+
+async function chatChannelRows() {
+  const data = await chatServerFetch("/api/bitboy_chat_channels");
+  return chatRecordEntries(data);
+}
+
+async function ensureDefaultChatStudio(rows) {
+  const all = rows || (await chatChannelRows());
+  const slug = CHAT_DEFAULT_STUDIO_SLUG;
+  const studioId = CHAT_DEFAULT_STUDIO_ID;
+  let mainRow =
+    all.find((row) => String(row.id) === CHAT_CHANNEL_ID) ||
+    all.find(
+      (row) =>
+        String(row.n || row.name || "").toLowerCase() ===
+        CHAT_CHANNEL_NAME.toLowerCase(),
+    );
+  if (!mainRow) {
+    const created = await chatServerFetch("/api/bitboy_chat_channels", {
+      method: "POST",
+      body: {
+        id: CHAT_CHANNEL_ID,
+        n: CHAT_CHANNEL_NAME,
+        t: "global",
+        sv: slug,
+        studio: studioId,
+        d: "Twilight Studio main channel",
+        pos: 0,
+      },
+    });
+    mainRow = { ...created, id: created.__id || created.id || CHAT_CHANNEL_ID };
+  } else if (String(mainRow.n || "") !== CHAT_CHANNEL_NAME) {
+    try {
+      await chatServerFetch("/api/bitboy_chat_channels", {
+        method: "POST",
+        body: {
+          ...mainRow,
+          id: mainRow.id || CHAT_CHANNEL_ID,
+          n: CHAT_CHANNEL_NAME,
+          t: "global",
+          sv: slug,
+          studio: studioId,
+          d: mainRow.d || "Twilight Studio main channel",
+        },
+      });
+      mainRow = { ...mainRow, n: CHAT_CHANNEL_NAME, sv: slug, studio: studioId };
+    } catch (error) {
+      log("warning", "chat", "main channel rename failed", {
+        message: error.message,
+      });
+    }
+  }
+  let studioRow = all.find((row) => String(row.id) === studioId);
+  if (!studioRow) {
+    const created = await chatServerFetch("/api/bitboy_chat_channels", {
+      method: "POST",
+      body: {
+        id: studioId,
+        n: CHAT_DEFAULT_STUDIO_NAME,
+        t: "studio",
+        sv: slug,
+        owner: "TwilightStudio.Dev",
+        d: "The official Twilight Studio community hub",
+        main: mainRow.id || CHAT_CHANNEL_ID,
+        pos: -10,
+      },
+    });
+    studioRow = { ...created, id: created.__id || created.id || studioId };
+  } else if (!studioRow.main) {
+    try {
+      await chatServerFetch("/api/bitboy_chat_channels", {
+        method: "POST",
+        body: {
+          ...studioRow,
+          id: studioRow.id || studioId,
+          main: mainRow.id || CHAT_CHANNEL_ID,
+        },
+      });
+      studioRow = { ...studioRow, main: mainRow.id || CHAT_CHANNEL_ID };
+    } catch {}
+  }
+  const channelRows = all.filter(
+    (row) => !String(row.id || "").startsWith("studio:"),
+  );
+  return chatStudioFromRow(
+    { ...studioRow, main: studioRow.main || mainRow.id || CHAT_CHANNEL_ID },
+    channelRows,
+  );
+}
+
+async function listChatStudios() {
+  let rows = await chatChannelRows();
+  const defaultStudio = await ensureDefaultChatStudio(rows);
+  rows = await chatChannelRows();
+  const studioRows = rows.filter(
+    (row) =>
+      String(row.id || "").startsWith("studio:") ||
+      String(row.t || "").toLowerCase() === "studio",
+  );
+  const channelRows = rows.filter(
+    (row) =>
+      !String(row.id || "").startsWith("studio:") &&
+      String(row.t || "").toLowerCase() !== "studio",
+  );
+  const studios = studioRows.map((row) =>
+    chatStudioFromRow(row, channelRows),
+  );
+  if (!studios.some((studio) => studio.id === defaultStudio.id)) {
+    studios.unshift(defaultStudio);
+  }
+  studios.sort((a, b) =>
+    a.id === defaultStudio.id ? -1 : b.id === defaultStudio.id ? 1 : a.name.localeCompare(b.name),
+  );
   try {
-    const channel = await ensureChatChannel();
-    // Creator Studio has exactly one channel. BitBoy's public and review
-    // channels stay on the server but are never shown in this applet.
-    res.json({ ok: true, channels: [channel] });
+    const profiles = await chatServerFetch("/api/creator_chat_profiles");
+    const records = Object.values(profiles.records || {});
+    for (const studio of studios) {
+      studio.members = records.filter(
+        (profile) =>
+          String(profile.studio || "") === studio.id ||
+          String(profile.studioSlug || "").toLowerCase() === studio.slug.toLowerCase(),
+      ).length;
+    }
+    // The official hub owner must always be a real CEO in the cloud profile
+    // table, not just the owner string on the studio row.
+    const owner = String(defaultStudio.owner || "").trim();
+    const ownerRecord = records.find(
+      (profile) => String(profile.u || "").toLowerCase() === owner.toLowerCase(),
+    );
+    if (owner && ownerRecord && !String(ownerRecord.studio || "")) {
+      await saveChatProfilePatch(owner, {
+        studio: defaultStudio.id,
+        studioSlug: defaultStudio.slug,
+        studioRole: "owner",
+      }).catch(() => null);
+    }
+  } catch {}
+  return { studios, defaultStudio };
+}
+
+function findChatStudio(studios, value) {
+  const needle = String(value || "").trim().toLowerCase();
+  if (!needle) return null;
+  return (
+    studios.find(
+      (studio) =>
+        studio.id.toLowerCase() === needle ||
+        studio.slug.toLowerCase() === needle ||
+        studio.name.toLowerCase() === needle,
+    ) || null
+  );
+}
+
+function canManageChatStudio(studio, username) {
+  const user = String(username || "").trim().toLowerCase();
+  return Boolean(
+    studio &&
+      user &&
+      (studio.owner.toLowerCase() === user || user === HUB_ADMIN_USERNAME),
+  );
+}
+
+async function chatProfileRecord(username) {
+  const data = await chatServerFetch("/api/creator_chat_profiles");
+  const entries = Object.entries(data.records || {});
+  const match = entries.find(
+    ([, row]) =>
+      String(row.u || row.username || "").toLowerCase() ===
+      String(username || "").toLowerCase(),
+  );
+  return match ? { ...match[1], id: match[0] } : null;
+}
+
+async function saveChatProfilePatch(username, patch) {
+  const current = await chatProfileRecord(username);
+  const body = {
+    ...(current || {
+      id: "profile:" + String(username || "").toLowerCase(),
+      u: username,
+      name: username,
+      avatar: "",
+      border: "none",
+      font: "system",
+      gradient: ["#7dd3fc", "#c084fc"],
+      effect: "none",
+    }),
+    ...patch,
+    id: current?.id || "profile:" + String(username || "").toLowerCase(),
+  };
+  return chatServerFetch("/api/creator_chat_profiles", {
+    method: "POST",
+    body,
+  });
+}
+
+let chatStudiosCache = { at: 0, data: null };
+
+app.get("/api/chat/studios", async (req, res) => {
+  try {
+    const { studios, defaultStudio } = await listChatStudios();
+    const payload = {
+      ok: true,
+      studios,
+      defaultStudio: defaultStudio.id,
+      defaultSlug: defaultStudio.slug,
+    };
+    chatStudiosCache = { at: Date.now(), data: payload };
+    res.json(payload);
+  } catch (error) {
+    // The cloud is reached through ngrok, which occasionally drops a request.
+    // Serve the last good studio tree instead of failing the whole chat applet.
+    if (chatStudiosCache.data) {
+      return res.json({
+        ...chatStudiosCache.data,
+        cached: true,
+        warning: error.message,
+      });
+    }
+    res.status(502).json({ error: error.message });
+  }
+});
+
+app.post("/api/chat/studios", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = String(body.name || "").trim().slice(0, 40);
+    const owner = String(body.owner || body.username || "").trim();
+    if (name.length < 2) {
+      return res.status(400).json({ error: "Studio name needs at least 2 characters." });
+    }
+    if (!owner) {
+      return res.status(400).json({ error: "A studio owner username is required." });
+    }
+    const { studios } = await listChatStudios();
+    const owned = studios.find(
+      (studio) => studio.owner.toLowerCase() === owner.toLowerCase(),
+    );
+    if (owned) {
+      return res.status(409).json({
+        error: "You already own " + owned.name + ". Manage it from the Servers panel.",
+        studio: owned,
+      });
+    }
+    const currentProfile = await chatProfileRecord(owner);
+    const currentStudioId = String(currentProfile?.studio || "").trim();
+    const currentStillExists = studios.some((studio) => studio.id === currentStudioId);
+    if (currentStudioId && currentStillExists) {
+      return res.status(409).json({
+        error:
+          "You are already in a studio. Leave it before creating your own studio, so every member stays in one studio at a time.",
+        currentStudio: currentStudioId,
+      });
+    }
+    const slug = chatStudioPascal(name);
+    if (studios.some((studio) => studio.slug.toLowerCase() === slug.toLowerCase())) {
+      return res.status(409).json({ error: "That studio name is already taken." });
+    }
+    const studioId = "studio:" + slug;
+    const mainName = slug + ".Main";
+    const mainId = "global:" + slug + ":" + mainName;
+    await chatServerFetch("/api/bitboy_chat_channels", {
+      method: "POST",
+      body: {
+        id: mainId,
+        n: mainName,
+        t: "global",
+        sv: slug,
+        studio: studioId,
+        d: name + " main channel",
+        pos: 0,
+      },
+    });
+    const created = await chatServerFetch("/api/bitboy_chat_channels", {
+      method: "POST",
+      body: {
+        id: studioId,
+        n: name,
+        t: "studio",
+        sv: slug,
+        owner,
+        d: String(body.description || "A Creator Studio community hub").slice(0, 240),
+        main: mainId,
+        pos: 0,
+      },
+    });
+    const studio = {
+      id: studioId,
+      slug,
+      name,
+      owner,
+      description: String(body.description || "A Creator Studio community hub"),
+      mainChannel: mainId,
+      channels: [chatChannelFromRow({ id: mainId, n: mainName, t: "global", sv: slug, studio: studioId, d: name + " main channel", pos: 0 })],
+      members: 1,
+      createdAt: created.__created_at || "",
+    };
+    await saveChatProfilePatch(owner, {
+      studio: studioId,
+      studioSlug: slug,
+      studioRole: "owner",
+    }).catch(() => null);
+    log("info", "chat", "studio created", { studio: studioId, owner });
+    res.json({ ok: true, studio });
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
+});
+
+app.post("/api/chat/studios/join", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const username = String(body.username || "").trim();
+    if (!username) return res.status(400).json({ error: "username is required" });
+    const { studios } = await listChatStudios();
+    const studio = findChatStudio(studios, body.studio || body.studioId || body.studioSlug);
+    if (!studio) return res.status(404).json({ error: "That studio no longer exists." });
+    const currentProfile = await chatProfileRecord(username);
+    const currentStudio = String(currentProfile?.studio || "").trim();
+    const currentStillExists = studios.some((entry) => entry.id === currentStudio);
+    if (currentStudio && currentStudio !== studio.id && currentStillExists) {
+      return res.status(409).json({
+        error:
+          "You are already in a studio. Leave it before joining another studio, so you stay in one studio community at a time.",
+        currentStudio,
+      });
+    }
+    const role =
+      studio.owner.toLowerCase() === username.toLowerCase() ? "owner" : "member";
+    await saveChatProfilePatch(username, {
+      studio: studio.id,
+      studioSlug: studio.slug,
+      studioRole: role,
+    });
+    res.json({ ok: true, studio, role });
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
+});
+
+async function deleteChatChannelMessages(channelId) {
+  // The cloud keeps messages keyed by channel. Delete them in small batches so
+  // a disbanded studio does not leave orphaned chat JSON behind.
+  for (let pass = 0; pass < 4; pass += 1) {
+    let rows = [];
+    try {
+      const data = await chatServerFetch(
+        "/api/channels/" +
+          encodeURIComponent(channelId) +
+          "/messages?newest=1&limit=200",
+        { timeoutMs: 15000 },
+      );
+      rows = Array.isArray(data?.messages) ? data.messages : [];
+    } catch {
+      return;
+    }
+    const ids = rows
+      .map((row) => String(row.id || row.__id || ""))
+      .filter(Boolean);
+    if (!ids.length) return;
+    for (let index = 0; index < ids.length; index += 8) {
+      const batch = ids.slice(index, index + 8);
+      await Promise.all(
+        batch.map((id) =>
+          chatServerFetch("/api/bitboy_chat_messages/" + encodeURIComponent(id), {
+            method: "DELETE",
+            timeoutMs: 12000,
+          }).catch(() => null),
+        ),
+      );
+    }
+    if (rows.length < 200) return;
+  }
+}
+
+async function clearStudioMembers(studio) {
+  try {
+    const data = await chatServerFetch("/api/creator_chat_profiles");
+    const entries = Object.entries(data?.records || {});
+    for (const [id, row] of entries) {
+      const matches =
+        String(row.studio || "") === studio.id ||
+        String(row.studioSlug || "").toLowerCase() === studio.slug.toLowerCase();
+      if (!matches) continue;
+      await chatServerFetch("/api/creator_chat_profiles", {
+        method: "POST",
+        body: { ...row, id, studio: "", studioSlug: "", studioRole: "" },
+        timeoutMs: 12000,
+      }).catch(() => null);
+    }
+  } catch {}
+}
+
+async function disbandChatStudio(studio) {
+  for (const channel of studio.channels) {
+    if (!channel.id) continue;
+    await deleteChatChannelMessages(channel.id);
+    await chatServerFetch(
+      "/api/bitboy_chat_channels/" + encodeURIComponent(channel.id),
+      { method: "DELETE", timeoutMs: 12000 },
+    ).catch(() => null);
+  }
+  await clearStudioMembers(studio);
+  await chatServerFetch(
+    "/api/bitboy_chat_channels/" + encodeURIComponent(studio.id),
+    { method: "DELETE", timeoutMs: 12000 },
+  ).catch(() => null);
+}
+
+app.post("/api/chat/studios/leave", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const username = String(body.username || "").trim();
+    if (!username) return res.status(400).json({ error: "username is required" });
+    const { studios } = await listChatStudios();
+    const studio = findChatStudio(studios, body.studio || body.studioId || body.studioSlug);
+    if (!studio) {
+      await saveChatProfilePatch(username, {
+        studio: "",
+        studioSlug: "",
+        studioRole: "",
+      });
+      return res.json({ ok: true });
+    }
+    if (studio.owner.toLowerCase() === username.toLowerCase()) {
+      if (studio.id === CHAT_DEFAULT_STUDIO_ID || studio.slug === CHAT_DEFAULT_STUDIO_SLUG) {
+        return res.status(403).json({
+          error: "The official Twilight Studio hub is the community default and cannot be disbanded.",
+        });
+      }
+      if (body.disband !== true) {
+        return res.status(409).json({
+          error:
+            "You own this studio. Leaving disbands it, removes every channel and cloud studio file, and removes its members. Confirm the disband to continue.",
+          requiresDisband: true,
+          studio,
+        });
+      }
+      await disbandChatStudio(studio);
+      await saveChatProfilePatch(username, {
+        studio: "",
+        studioSlug: "",
+        studioRole: "",
+      });
+      log("info", "chat", "studio disbanded", {
+        studio: studio.id,
+        owner: username,
+      });
+      return res.json({ ok: true, disbanded: true, studio });
+    }
+    await saveChatProfilePatch(username, {
+      studio: "",
+      studioSlug: "",
+      studioRole: "",
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
+});
+
+const chatChannelsCache = new Map();
+
+app.get("/api/chat/channels", async (req, res) => {
+  const requested = String(req.query.studio || "default");
+  try {
+    const { studios, defaultStudio } = await listChatStudios();
+    const studio =
+      findChatStudio(studios, req.query.studio) || defaultStudio;
+    const channels = studio.channels.length
+      ? studio.channels
+      : [chatChannelFromRow({ id: studio.mainChannel || CHAT_CHANNEL_ID, n: CHAT_CHANNEL_NAME, sv: studio.slug })];
+    const payload = { ok: true, studio, channels };
+    chatChannelsCache.set(requested, payload);
+    chatChannelsCache.set(studio.id, payload);
+    chatChannelsCache.set(studio.slug, payload);
+    if (studio.id === CHAT_DEFAULT_STUDIO_ID) chatChannelsCache.set("default", payload);
+    res.json(payload);
+  } catch (error) {
+    const cached =
+      chatChannelsCache.get(requested) || chatChannelsCache.get("default");
+    if (cached) {
+      return res.json({ ...cached, cached: true, warning: error.message });
+    }
+    res.status(502).json({ error: error.message });
+  }
+});
+
+app.post("/api/chat/channels", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const username = String(body.username || body.owner || "").trim();
+    const { studios } = await listChatStudios();
+    const studio = findChatStudio(studios, body.studio || body.studioId || body.studioSlug);
+    if (!studio) return res.status(404).json({ error: "Studio not found." });
+    if (!canManageChatStudio(studio, username)) {
+      return res.status(403).json({ error: "Only this studio's owner can add channels." });
+    }
+    let name = String(body.name || "")
+      .trim()
+      .replace(/s+/g, "-")
+      .replace(/[^a-zA-Z0-9._-]/g, "");
+    if (!name) return res.status(400).json({ error: "Channel name is required." });
+    if (
+      name.toLowerCase() === studio.slug.toLowerCase() ||
+      name.toLowerCase() === "main"
+    ) {
+      name = "Main";
+    }
+    if (!name.toLowerCase().startsWith(studio.slug.toLowerCase() + ".")) {
+      name = studio.slug + "." + name;
+    }
+    if (studio.channels.some((channel) => channel.name.toLowerCase() === name.toLowerCase())) {
+      return res.status(409).json({ error: "That channel already exists in this studio." });
+    }
+    const id = "global:" + studio.slug + ":" + name;
+    const created = await chatServerFetch("/api/bitboy_chat_channels", {
+      method: "POST",
+      body: {
+        id,
+        n: name,
+        t: "global",
+        sv: studio.slug,
+        studio: studio.id,
+        d: "Text channel in " + studio.name,
+        pos: studio.channels.length + 1,
+      },
+    });
+    log("info", "chat", "studio channel created", { studio: studio.id, channel: id });
+    res.json({
+      ok: true,
+      channel: chatChannelFromRow({ ...created, id: created.__id || id }),
+    });
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
+});
+
+app.delete("/api/chat/channels/:id", async (req, res) => {
+  try {
+    const id = decodeURIComponent(String(req.params.id || ""));
+    const username = String(req.query.username || req.body?.username || "").trim();
+    const { studios } = await listChatStudios();
+    const studio = studios.find((entry) =>
+      entry.channels.some((channel) => channel.id === id),
+    );
+    if (!studio) return res.status(404).json({ error: "Channel not found." });
+    if (!canManageChatStudio(studio, username)) {
+      return res.status(403).json({ error: "Only this studio's owner can remove channels." });
+    }
+    const channel = studio.channels.find((entry) => entry.id === id);
+    if (!channel) return res.status(404).json({ error: "Channel not found." });
+    if (channel.main || channel.id === CHAT_CHANNEL_ID || /.main$/i.test(channel.name)) {
+      return res.status(403).json({ error: "The Main channel cannot be removed." });
+    }
+    await chatServerFetch("/api/bitboy_chat_channels/" + encodeURIComponent(id), {
+      method: "DELETE",
+    });
+    log("info", "chat", "studio channel removed", { studio: studio.id, channel: id });
+    res.json({ ok: true, channel });
   } catch (error) {
     res.status(502).json({ error: error.message });
   }
@@ -4721,12 +5336,12 @@ async function chatLegacyPresence() {
   // Older builds and other clients wrote presence into the message table.
   // Keep reading that history so those users still get a correct dot while
   // they update to the build that heartbeats into creator_chat_presence.
-  if (Date.now() - chatLegacyPresenceCache.at < 60_000) return chatLegacyPresenceCache.entries;
+  if (Date.now() - chatLegacyPresenceCache.at < 5 * 60_000) return chatLegacyPresenceCache.entries;
   try {
     const data = await chatServerFetch(
       "/api/channels/" +
         encodeURIComponent(CHAT_CHANNEL_ID) +
-        "/messages?newest=1&limit=500",
+        "/messages?newest=1&limit=200",
       { timeoutMs: 12000 },
     );
     const entries = (Array.isArray(data?.messages) ? data.messages : [])
@@ -4740,7 +5355,14 @@ async function chatLegacyPresence() {
   }
 }
 
+let chatMergedPresenceCache = { at: 0, entries: [] };
+
 async function mergedChatPresence() {
+  // Presence is polled by every open app. Cache the merged cloud answer so a
+  // slow ngrok round-trip cannot be repeated by every client every few seconds.
+  if (Date.now() - chatMergedPresenceCache.at < 15_000) {
+    return chatMergedPresenceCache.entries;
+  }
   const merged = new Map();
   const add = (entry) => {
     if (!entry) return;
@@ -4755,12 +5377,14 @@ async function mergedChatPresence() {
   ]);
   for (const entry of cloudPresence) add(entry);
   for (const entry of legacyPresence) add(entry);
-  return [...merged.values()]
+  const entries = [...merged.values()]
     .map((entry) => ({
       ...entry,
       online: entry.online && Date.now() - entry.at < CHAT_PRESENCE_TTL_MS,
     }))
     .sort((a, b) => b.at - a.at);
+  chatMergedPresenceCache = { at: Date.now(), entries };
+  return entries;
 }
 
 app.get("/api/chat/presence", async (req, res) => {
@@ -4786,6 +5410,7 @@ app.post("/api/chat/presence", async (req, res) => {
       at: Date.now(),
     };
     chatPresence.set(key, entry);
+    chatMergedPresenceCache.at = 0;
     // Presence lives in its own cloud table. Keeping it out of the message
     // table means heartbeats can no longer push real chat messages out of the
     // newest-history window.
@@ -4879,6 +5504,42 @@ app.get("/api/chat/messages", async (req, res) => {
   }
 });
 
+const ensuredDmSessions = new Set();
+
+function dmSessionRecordId(first, second) {
+  return (
+    "dm:" +
+    [String(first || "").toLowerCase(), String(second || "").toLowerCase()]
+      .sort()
+      .join("__")
+  );
+}
+
+async function ensureDmSessionRecord(username, peer, channel) {
+  const id = dmSessionRecordId(username, peer);
+  if (ensuredDmSessions.has(id)) return id;
+  ensuredDmSessions.add(id);
+  try {
+    await chatServerFetch("/api/bitboy_chat_channels", {
+      method: "POST",
+      timeoutMs: 15000,
+      body: {
+        id,
+        n: "DM " + username + " / " + peer,
+        t: "dm",
+        sv: "CreatorStudio",
+        users: [username, peer].sort(),
+        channel,
+        lastAt: Date.now(),
+        d: "Direct message session between " + username + " and " + peer,
+      },
+    });
+  } catch {
+    ensuredDmSessions.delete(id);
+  }
+  return id;
+}
+
 app.post("/api/chat/send", async (req, res) => {
   try {
     const body = req.body || {};
@@ -4897,6 +5558,11 @@ app.post("/api/chat/send", async (req, res) => {
     for (const key of ["kind", "to", "file", "signal", "avatar", "name", "border", "font", "gradient", "effect", "expiresAt"]) {
       if (body[key] !== undefined) payload[key] = body[key];
     }
+    // The first message in a direct message thread creates a small DM session
+    // record on the cloud. An unused, opened hotline never gets a record.
+    if (payload.to) {
+      void ensureDmSessionRecord(username, String(payload.to), channel).catch(() => null);
+    }
     // The channel history endpoint reads bitboy_chat_messages, so persist there.
     // /api/messages is a different table and its rows never appear in history.
     const data = await chatServerFetch("/api/bitboy_chat_messages", { method: "POST", body: payload });
@@ -4913,8 +5579,38 @@ app.post("/api/chat/delete", async (req, res) => {
     const id = String(body.id || body.messageId || "").trim();
     const username = String(body.username || "").trim();
     if (!id) return res.status(400).json({ error: "A message id is required." });
-    if (!(await hubAdminAllowed(username, body.accountId))) {
-      return res.status(403).json({ error: "Only TwilightStudio.Dev can delete chat messages." });
+    if (!username) {
+      return res.status(403).json({ error: "A username is required to delete a message." });
+    }
+    let rows = [];
+    const idx = Number(body.idx || body.i || 0);
+    const query = idx
+      ? "before=" + encodeURIComponent(String(idx + 1)) + "&limit=10"
+      : "newest=1&limit=300";
+    try {
+      const data = await chatServerFetch(
+        "/api/channels/" + encodeURIComponent(channel) + "/messages?" + query,
+      );
+      rows = Array.isArray(data?.messages) ? data.messages : [];
+    } catch {
+      rows = [];
+    }
+    let row = rows.find((message) => String(message.id || message.__id || "") === id);
+    if (!row && idx) {
+      try {
+        const data = await chatServerFetch(
+          "/api/channels/" + encodeURIComponent(channel) + "/messages?newest=1&limit=300",
+        );
+        rows = Array.isArray(data?.messages) ? data.messages : [];
+        row = rows.find((message) => String(message.id || message.__id || "") === id);
+      } catch {}
+    }
+    if (!row) {
+      return res.status(404).json({ error: "That message is no longer on the cloud." });
+    }
+    const author = String(row.u || row.user || "").toLowerCase();
+    if (author !== username.toLowerCase()) {
+      return res.status(403).json({ error: "You can only delete your own messages." });
     }
     const attempts = [
       ["/api/bitboy_chat_messages/" + encodeURIComponent(id), { method: "DELETE" }],
@@ -4967,6 +5663,89 @@ app.post("/api/chat/delete", async (req, res) => {
   }
 });
 
+app.post("/api/chat/dm/delete", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const username = String(body.username || "").trim();
+    const peer = String(body.peer || "").trim();
+    if (!username || !peer) {
+      return res.status(400).json({ error: "username and peer are required" });
+    }
+    const me = username.toLowerCase();
+    const them = peer.toLowerCase();
+    const channelIds = new Set();
+    if (body.channel) channelIds.add(String(body.channel));
+    channelIds.add(CHAT_CHANNEL_ID);
+    try {
+      const data = await chatServerFetch("/api/bitboy_chat_channels", { timeoutMs: 15000 });
+      for (const row of chatRecordEntries(data)) {
+        const id = String(row.id || "");
+        if (!id || id.startsWith("studio:") || String(row.t || "") === "studio") continue;
+        channelIds.add(id);
+      }
+    } catch {}
+    try {
+      const { studios } = await listChatStudios();
+      for (const studio of studios) {
+        for (const channel of studio.channels || []) {
+          if (channel.id) channelIds.add(String(channel.id));
+        }
+      }
+    } catch {}
+
+    const dmRecordId = dmSessionRecordId(username, peer);
+    let deleted = 0;
+    for (const channel of channelIds) {
+      if (!channel) continue;
+      for (let pass = 0; pass < 3; pass += 1) {
+        let rows = [];
+        try {
+          const data = await chatServerFetch(
+            "/api/channels/" +
+              encodeURIComponent(channel) +
+              "/messages?newest=1&limit=500",
+            { timeoutMs: 15000 },
+          );
+          rows = Array.isArray(data?.messages) ? data.messages : [];
+        } catch {
+          break;
+        }
+        const matches = rows.filter((row) => {
+          const to = String(row.to || "").toLowerCase();
+          if (!to) return false;
+          const from = String(row.u || row.user || "").toLowerCase();
+          return (from === me && to === them) || (from === them && to === me);
+        });
+        if (!matches.length) break;
+        for (let index = 0; index < matches.length; index += 8) {
+          const batch = matches.slice(index, index + 8);
+          await Promise.all(
+            batch.map((row) => {
+              const id = String(row.id || row.__id || "");
+              if (!id) return null;
+              return chatServerFetch(
+                "/api/bitboy_chat_messages/" + encodeURIComponent(id),
+                { method: "DELETE", timeoutMs: 12000 },
+              ).catch(() => null);
+            }),
+          );
+          deleted += batch.length;
+        }
+        if (matches.length < 500) break;
+      }
+    }
+    await chatServerFetch(
+      "/api/bitboy_chat_channels/" + encodeURIComponent(dmRecordId),
+      { method: "DELETE", timeoutMs: 12000 },
+    ).catch(() => null);
+    ensuredDmSessions.delete(dmRecordId);
+    log("info", "chat", "dm session deleted", { username, peer, deleted });
+    res.json({ ok: true, deleted });
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
+});
+
 app.get("/api/chat/profiles", async (req, res) => {
   try {
     const data = await chatServerFetch("/api/creator_chat_profiles");
@@ -4990,6 +5769,9 @@ app.post("/api/chat/profiles", async (req, res) => {
     res.status(502).json({ error: error.message });
   }
 });
+
+/* Public forums share the cloud chat tables through their own module. */
+registerForumRoutes(app, { chatServerFetch, chatRecordEntries, log });
 
 /* ------------------------------------------------------------------ */
 /* API: Twilight Studio Hub                                            */
@@ -5954,6 +6736,38 @@ app.get("/api/research/preflight", async (req, res) => {
   }
 });
 
+app.get("/api/coding/prefs", async (req, res) => {
+  try {
+    const projectId = String(req.query.projectId || "");
+    if (!projectId) return res.status(400).json({ error: "projectId is required" });
+    const file = path.join(codingWorkspaceDir(projectId), "prefs.json");
+    const prefs = await readJson(file, {});
+    res.json({ ok: true, ...prefs });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/coding/prefs", async (req, res) => {
+  try {
+    const { projectId, rootDir, trusted, currentSession, sessionId, sessions } = req.body || {};
+    if (!projectId) return res.status(400).json({ error: "projectId is required" });
+    const dir = codingWorkspaceDir(projectId);
+    await ensureDir(dir);
+    await writeJsonAtomic(path.join(dir, "prefs.json"), {
+      rootDir: String(rootDir || ""),
+      trusted: Boolean(trusted),
+      currentSession: String(currentSession || ""),
+      sessionId: sessionId || null,
+      sessions: Array.isArray(sessions) ? sessions.slice(-30) : [],
+      updatedAt: new Date().toISOString(),
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post("/api/coding/prompt", async (req, res) => {
   try {
     const { projectId, sessionId, text, model, dir, trusted, images = [], githubRepo = null, history = [] } = req.body || {};
@@ -6002,6 +6816,11 @@ app.post("/api/coding/prompt", async (req, res) => {
     // and code plus the indexed local links and folders are all in the system
     // prompt before the first tool call can happen.
     const research = await preflightResearch(text || "");
+    // Per-prompt knowledge injection: system prompts are not reliably re-read
+    // on a continued OpenCode session, so the briefing is also a prompt part.
+    if (research.briefing) {
+      parts.unshift({ type: "text", text: research.briefing });
+    }
     const referenceContext = research.referenceText;
     const githubContext = research.githubText;
     const globalContext = await globalLearningContextFor(text || "", state.root);
@@ -6654,15 +7473,21 @@ app.post("/api/opencode/chat", async (req, res) => {
     let webContext = "";
     let globalContext = "";
     let sessionContext = "";
+    let preflight = null;
     if (!isDirectWriter) {
-      const [refs, github, web, global] = await Promise.all([
-        referenceContextFor(text),
-        githubContextFor(text),
+      // Required for every prompt: preflight before the model is called, even
+      // on the generic OpenCode chat route the Code applet uses.
+      const [research, web, global] = await Promise.all([
+        preflightResearch(text),
         agent === "research" ? webContextFor(text) : Promise.resolve(""),
         globalLearningContextFor(text),
       ]);
-      referenceContext = refs;
-      githubContext = github;
+      preflight = research;
+      if (research.briefing) {
+        parts.unshift({ type: "text", text: research.briefing });
+      }
+      referenceContext = research.referenceText;
+      githubContext = research.githubText;
       webContext = web;
       globalContext = global;
       sessionContext = await sessionContextFor(state, text);
@@ -6684,10 +7509,18 @@ app.post("/api/opencode/chat", async (req, res) => {
             : "";
     const systemWithReferences = isDirectWriter
       ? ""
-      : [system, agentGuard, knowledgeInstructions, globalContext, githubContext, referenceContext, webContext, sessionContext, historyContext]
+      : [system, agentGuard, knowledgeInstructions, preflight?.briefing || "", globalContext, githubContext, referenceContext, webContext, sessionContext, historyContext]
           .filter(Boolean)
           .join("\n");
-    log("info", "chat", "opencode prompt", { projectId, sessionId: sid, agent, model, images: images.length });
+    if (preflight) await writeResearchGate(projectId, preflight, text);
+    log("info", "chat", "opencode prompt", {
+      projectId,
+      sessionId: sid,
+      agent,
+      model,
+      images: images.length,
+      preflight: preflight?.counts || null,
+    });
     let sent;
     try {
       sent = await ocSendMessage(state, {
@@ -8717,6 +9550,10 @@ async function listReferenceFiles(dir, urlPrefix) {
 
 const REFERENCE_INDEX_FILE = () => path.join(DATA_DIR, "reference-index.json");
 const REFERENCE_NOTES_FILE = () => path.join(DATA_DIR, "reference-index.md");
+// The searchable dictionary is stored next to the index and loaded from disk on
+// boot. It is rebuilt only when the index itself changes, so a saved machine
+// never has to re-read a page just to answer a keyword query.
+const REFERENCE_DICTIONARY_FILE = () => path.join(DATA_DIR, "reference-dictionary.json");
 
 function tokenizeReference(text) {
   // Keywords are the search dictionary pre-flight research runs on. Keep one
@@ -8743,7 +9580,7 @@ function tokenizeReference(text) {
     if (/[a-z][a-z0-9]*[A-Z]/.test(word)) {
       for (const part of word.replace(/([a-z0-9])([A-Z])/g, "$1 $2").split(/\s+/)) add(part);
     }
-    if (out.length >= 200) break;
+    if (out.length >= REFERENCE_STORED_KEYWORDS) break;
   }
   return out;
 }
@@ -8764,6 +9601,7 @@ function stripHtml(html) {
 }
 
 let rawReferenceIndexCache = { key: "", index: null };
+let githubMergeCache = { key: "", at: 0, index: null };
 
 async function loadReferenceIndex() {
   let stat = null;
@@ -8778,16 +9616,41 @@ async function loadReferenceIndex() {
     index = rawReferenceIndexCache.index;
   } else {
     index = await readJson(REFERENCE_INDEX_FILE(), { updatedAt: null, entries: [] });
+    // Older indexes stored whole page bodies and up to 200 keywords per entry.
+    // Normalise once on load: search then scans a fraction of the text, and the
+    // next write shrinks the file instead of carrying the old bulk forward.
+    if (Array.isArray(index.entries)) {
+      const seenIds = new Set();
+      const entries = [];
+      for (const entry of index.entries) {
+        if (!entry || !entry.id || seenIds.has(entry.id)) continue;
+        seenIds.add(entry.id);
+        entries.push({
+          ...entry,
+          summary: String(entry.summary || "").slice(0, REFERENCE_STORED_SUMMARY),
+          text: String(entry.text || "").slice(0, REFERENCE_STORED_TEXT),
+          keywords: Array.isArray(entry.keywords)
+            ? entry.keywords.slice(0, REFERENCE_STORED_KEYWORDS)
+            : [],
+        });
+      }
+      index = { ...index, entries };
+    }
     rawReferenceIndexCache = { key: cacheKey, index };
   }
   try {
+    if (githubMergeCache.index && githubMergeCache.key === cacheKey && Date.now() - githubMergeCache.at < 15000) {
+      return githubMergeCache.index;
+    }
     const github = await loadGithubIndex();
     const githubEntries = githubReferenceEntries(github);
     if (!githubEntries.length) return index;
     const known = new Set((index.entries || []).map((entry) => entry.id));
     const extra = githubEntries.filter((entry) => !known.has(entry.id));
     if (!extra.length) return index;
-    return { ...index, entries: [...extra, ...(index.entries || [])] };
+    const merged = { ...index, entries: [...extra, ...(index.entries || [])] };
+    githubMergeCache = { key: cacheKey, at: Date.now(), index: merged };
+    return merged;
   } catch {
     return index;
   }
@@ -8796,10 +9659,22 @@ async function loadReferenceIndex() {
 // The index is rebuilt automatically at app load and after a source changes.
 // A signature of the saved folders/links makes that cheap: an index that
 // already matches the sources is reused instead of re-crawled.
-const REFERENCE_INDEX_TTL = 10 * 60 * 1000;
-// Folder trees can be huge. Keep a generous overall cap but reserve room for
-// URL entries so a large asset library can never push documentation out.
-const REFERENCE_INDEX_MAX_ENTRIES = 10000;
+// A completed index stays valid until the saved sources actually change. The
+// old 10-minute TTL re-crawled hundreds of sources over and over and made the
+// index look like it was constantly losing itself.
+const REFERENCE_INDEX_TTL = 24 * 60 * 60 * 1000;
+// A stuck "running" flag from a crashed pass must not lock the index forever.
+const REFERENCE_INDEX_LOCK_TTL = 30 * 60 * 1000;
+const REFERENCE_INDEX_MAX_ENTRIES = 14000;
+// Separate budgets: a large folder library must never push saved URLs out.
+const REFERENCE_INDEX_LOCAL_BUDGET = 8000;
+const REFERENCE_INDEX_URL_BUDGET = 5000;
+// Full page bodies were the reason a re-index could allocate gigabytes and
+// black-screen the renderer. Keep enough text to read and search, not the
+// whole page.
+const REFERENCE_STORED_TEXT = 2400;
+const REFERENCE_STORED_SUMMARY = 420;
+const REFERENCE_STORED_KEYWORDS = 120;
 
 function referenceSourceSignature(settings) {
   const folders = (settings.references?.folders || [])
@@ -8811,14 +9686,84 @@ function referenceSourceSignature(settings) {
   return createHash("sha1").update(JSON.stringify({ folders, links })).digest("hex");
 }
 
+function referenceIndexLockIsStale(index) {
+  const started = index?.progress?.startedAt
+    ? new Date(index.progress.startedAt).getTime()
+    : 0;
+  if (!Number.isFinite(started) || started <= 0) return true;
+  return Date.now() - started > REFERENCE_INDEX_LOCK_TTL;
+}
+
 function referenceIndexIsFresh(index, signature) {
   if (!index?.updatedAt || !Array.isArray(index.entries)) return false;
   if (index.signature && index.signature !== signature) return false;
-  // A pass interrupted by an app restart must resume, never count as fresh,
-  // or a 600-source library that never finished stays "done" forever.
+  // A pass interrupted by an app restart resumes. It is never "fresh" until
+  // the pass completes, and an old (stale) lock must also resume rather than
+  // freeze the index as permanently partial.
   if (index.progress?.running === true) return false;
-  const age = Date.now() - new Date(index.updatedAt).getTime();
-  return Number.isFinite(age) && age >= 0 && age < REFERENCE_INDEX_TTL;
+  if (index.complete === false) return false;
+  // No TTL. A completed index is durable until the saved source list changes.
+  // Previously a 24h "age" check re-crawled every link on a timer, which is
+  // exactly why the library kept asking to re-index forever.
+  return Number.isFinite(Date.parse(index.updatedAt));
+}
+
+function referenceEntryScope(entry) {
+  const type = String(entry?.type || "");
+  if (type === "url") return "url";
+  if (type === "github-repo" || type === "github-file") return "github";
+  return "local";
+}
+
+/**
+ * Fair, deterministic cap. Entries are grouped per source and handed out
+ * round-robin, so one giant folder can never consume the whole budget and
+ * saved links are guaranteed their own reserved slice. Duplicate ids are
+ * removed, which is what made the index look like it shrank and grew at
+ * random between passes.
+ */
+function capReferenceEntries(entries) {
+  const seen = new Set();
+  const unique = [];
+  for (const entry of entries || []) {
+    if (!entry || !entry.id || seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    unique.push(entry);
+  }
+  const pick = (kind, budget) => {
+    const groups = new Map();
+    for (const entry of unique) {
+      if (referenceEntryScope(entry) !== kind) continue;
+      const key = String(entry.sourceId || entry.type || "misc");
+      let list = groups.get(key);
+      if (!list) {
+        list = [];
+        groups.set(key, list);
+      }
+      list.push(entry);
+    }
+    const lists = [...groups.values()];
+    const out = [];
+    let cursor = 0;
+    while (out.length < budget) {
+      let progressed = false;
+      for (const list of lists) {
+        if (out.length >= budget) break;
+        if (cursor < list.length) {
+          out.push(list[cursor]);
+          progressed = true;
+        }
+      }
+      if (!progressed) break;
+      cursor += 1;
+    }
+    return out;
+  };
+  return [
+    ...pick("local", REFERENCE_INDEX_LOCAL_BUDGET),
+    ...pick("url", REFERENCE_INDEX_URL_BUDGET),
+    ...pick("github", Math.max(0, REFERENCE_INDEX_MAX_ENTRIES - REFERENCE_INDEX_LOCAL_BUDGET - REFERENCE_INDEX_URL_BUDGET)),
+  ].slice(0, REFERENCE_INDEX_MAX_ENTRIES);
 }
 
 let referenceIndexChain = Promise.resolve();
@@ -8861,7 +9806,15 @@ async function autoIndexReferences(options = {}) {
     const signature = referenceSourceSignature(settings);
     const index = await loadReferenceIndex();
     if (!force && referenceIndexIsFresh(index, signature)) {
-      return { ok: true, skipped: true, updatedAt: index.updatedAt, count: index.entries.length, signature };
+      const repair = await repairReferenceCoverage(settings);
+      return {
+        ok: true,
+        skipped: repair.repaired === 0,
+        repaired: repair.repaired || 0,
+        updatedAt: repair.updatedAt || index.updatedAt,
+        count: repair.count ?? index.entries.length,
+        signature,
+      };
     }
     const next = await scanReferenceSources(settings, { resume: !force });
     return {
@@ -8913,12 +9866,92 @@ async function refreshReferenceSource(kind, id) {
     const next = {
       updatedAt: new Date().toISOString(),
       signature: referenceSourceSignature(settings),
-      entries: [...kept, ...added].slice(0, REFERENCE_INDEX_MAX_ENTRIES),
+      complete: index.complete !== false,
+      entries: capReferenceEntries([...kept, ...added]),
+      indexedSourceIds: [...new Set([...(index.indexedSourceIds || []), id])],
     };
     await writeReferenceIndex(next);
     log("info", "references", "source re-indexed", { kind, id, added: added.length, count: next.entries.length });
     return { ok: true, kind, id, added: added.length, count: next.entries.length, updatedAt: next.updatedAt };
   });
+}
+
+async function repairReferenceCoverage(settings) {
+  const index = await loadReferenceIndex();
+  const folders = settings.references?.folders || [];
+  const links = settings.references?.links || [];
+  const present = new Set((index.entries || []).map((entry) => entry.sourceId).filter(Boolean));
+  const allIds = [...folders.map((f) => f.id), ...links.map((l) => l.id)];
+  const missing = [
+    ...folders.filter((folder) => !present.has(folder.id)).map((folder) => ({ kind: "folder", source: folder })),
+    ...links.filter((link) => !present.has(link.id)).map((link) => ({ kind: "link", source: link })),
+  ];
+  if (!missing.length) {
+    if (!Array.isArray(index.indexedSourceIds) || index.indexedSourceIds.length !== allIds.length) {
+      await writeReferenceIndex({ ...index, indexedSourceIds: allIds, complete: index.complete !== false });
+    }
+    return { ok: true, skipped: true, repaired: 0, count: (index.entries || []).length, updatedAt: index.updatedAt };
+  }
+
+  // One pass, one flush every few sources. The previous implementation wrote
+  // the whole 9 MB index after every single source, which made a large gap
+  // repair feel frozen. Progress is still durable: a restart resumes because
+  // finished sources have entries again.
+  const entries = [...(index.entries || [])];
+  const repairedIds = new Set();
+  referenceIndexProgress.running = true;
+  referenceIndexProgress.total = missing.length;
+  referenceIndexProgress.done = 0;
+  referenceIndexProgress.current = "";
+  referenceIndexProgress.startedAt = new Date().toISOString();
+  referenceIndexProgress.lastError = "";
+
+  const flush = async (final) => {
+    await writeReferenceIndex({
+      updatedAt: new Date().toISOString(),
+      signature: index.signature || referenceSourceSignature(settings),
+      complete: final ? true : index.complete !== false,
+      entries: capReferenceEntries(entries),
+      indexedSourceIds: final
+        ? allIds
+        : [...new Set([...(index.indexedSourceIds || []), ...repairedIds])],
+    });
+  };
+
+  let sinceFlush = 0;
+  for (const item of missing) {
+    referenceIndexProgress.current =
+      (item.kind === "folder" ? "Folder: " : "Link: ") +
+      String(item.source.label || item.source.url || item.source.path || "").slice(0, 90);
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      if (entries[i].sourceId === item.source.id) entries.splice(i, 1);
+    }
+    try {
+      if (item.kind === "folder") await scanReferenceFolder(item.source, entries, 800);
+      else await scanReferenceLink(item.source, entries, 1);
+    } catch (error) {
+      referenceIndexProgress.lastError = String(error?.message || error).slice(0, 200);
+    }
+    repairedIds.add(item.source.id);
+    referenceIndexProgress.done += 1;
+    sinceFlush += 1;
+    if (sinceFlush >= 8) {
+      sinceFlush = 0;
+      await flush(false).catch(() => null);
+    }
+  }
+  await flush(true);
+  referenceIndexProgress.running = false;
+  referenceIndexProgress.current = "";
+  const repaired = repairedIds.size;
+  const next = await loadReferenceIndex();
+  return {
+    ok: true,
+    skipped: false,
+    repaired,
+    count: (next.entries || []).length,
+    updatedAt: next.updatedAt,
+  };
 }
 
 /** Re-index a single link or folder right after it is added. */
@@ -8946,7 +9979,9 @@ function scheduleReferenceIndexCleanup(sourceId) {
     await writeReferenceIndex({
       updatedAt: new Date().toISOString(),
       signature: referenceSourceSignature(settings),
-      entries,
+      complete: index.complete !== false,
+      entries: capReferenceEntries(entries),
+      indexedSourceIds: (index.indexedSourceIds || []).filter((value) => value !== sourceId),
     });
   }).catch(() => {});
 }
@@ -9029,8 +10064,10 @@ async function scanReferenceFolder(folder, entries, maxEntries = 2000) {
             " " +
             text.slice(Math.max(0, text.length - 2000)),
         ),
-        summary: textExt ? stripHtml(text).slice(0, 500) : "Reference file: " + name,
-        text: text.slice(0, 8000),
+        summary: textExt
+          ? stripHtml(text).slice(0, REFERENCE_STORED_SUMMARY)
+          : "Reference file: " + name,
+        text: text.slice(0, REFERENCE_STORED_TEXT),
         updatedAt: new Date().toISOString(),
       });
     }
@@ -9112,10 +10149,13 @@ async function scanReferenceLink(link, entries, maxDepth = 1) {
         linkId: link.id,
         linkLabel: link.label,
         keywords: tokenizeReference(
-          link.label + " " + title + " " + (keywordsMatch?.[1] || "") + " " + headings + " " + text.slice(0, 5000),
+          link.label + " " + title + " " + (keywordsMatch?.[1] || "") + " " + headings + " " + text.slice(0, 2500),
         ),
-        summary: stripHtml(descriptionMatch?.[1] || text.slice(0, 500)).slice(0, 700),
-        text: text.slice(0, 12000),
+        summary: stripHtml(descriptionMatch?.[1] || text.slice(0, 500)).slice(
+          0,
+          REFERENCE_STORED_SUMMARY,
+        ),
+        text: text.slice(0, REFERENCE_STORED_TEXT),
         depth,
         updatedAt: new Date().toISOString(),
       });
@@ -9148,19 +10188,127 @@ async function scanLinksConcurrently(links, entries) {
   await Promise.all(Array.from({ length: workers }, () => worker()));
 }
 
+let keywordDictionaryCache = { key: "", dictionary: null };
+let persistedDictionary = null;
+let dictionaryPersistedKey = "";
+
+function referenceDictionaryKey(index) {
+  return [
+    String(index?.updatedAt || ""),
+    String(index?.entries?.length || 0),
+    String(index?.signature || ""),
+  ].join(":");
+}
+
+function buildReferenceDictionary(index) {
+  const records = new Map();
+  for (const entry of index?.entries || []) {
+    const scope = referenceEntryScope(entry);
+    const terms = new Set(
+      Array.isArray(entry.keywords) && entry.keywords.length
+        ? entry.keywords
+        : tokenizeReference(
+            [entry.title, entry.summary, entry.url, entry.path, entry.folderLabel, entry.linkLabel]
+              .filter(Boolean)
+              .join(" "),
+          ),
+    );
+    for (const term of terms) {
+      if (!term) continue;
+      let record = records.get(term);
+      if (!record) {
+        record = { term, count: 0, local: 0, url: 0, github: 0 };
+        records.set(term, record);
+      }
+      record.count += 1;
+      record[scope] += 1;
+    }
+  }
+  const list = [...records.values()].sort((a, b) => b.count - a.count || a.term.localeCompare(b.term));
+  return {
+    updatedAt: index?.updatedAt || null,
+    signature: index?.signature || "",
+    entryCount: index?.entries?.length || 0,
+    totalKeywords: list.length,
+    totalConnections: list.reduce((sum, record) => sum + record.count, 0),
+    list,
+  };
+}
+
+/** The dictionary for an index, cached in memory and backed by disk. */
+function keywordDictionaryFor(index) {
+  const key = referenceDictionaryKey(index);
+  if (keywordDictionaryCache.dictionary && keywordDictionaryCache.key === key) {
+    return keywordDictionaryCache.dictionary;
+  }
+  if (
+    persistedDictionary &&
+    persistedDictionary.updatedAt &&
+    persistedDictionary.updatedAt === index.updatedAt &&
+    Array.isArray(persistedDictionary.list)
+  ) {
+    keywordDictionaryCache = { key, dictionary: persistedDictionary };
+    return persistedDictionary;
+  }
+  const dictionary = buildReferenceDictionary(index);
+  keywordDictionaryCache = { key, dictionary };
+  persistedDictionary = dictionary;
+  return dictionary;
+}
+
+async function loadPersistedReferenceDictionary() {
+  if (persistedDictionary) return persistedDictionary;
+  persistedDictionary = await readJson(REFERENCE_DICTIONARY_FILE(), null);
+  if (persistedDictionary?.updatedAt) {
+    dictionaryPersistedKey = referenceDictionaryKey({
+      updatedAt: persistedDictionary.updatedAt,
+      signature: persistedDictionary.signature,
+      entries: { length: persistedDictionary.entryCount || 0 },
+    });
+  }
+  return persistedDictionary;
+}
+
+/** Write a dictionary object to disk at most once per index version. */
+async function ensureDictionaryPersisted(index, dictionary) {
+  const key = referenceDictionaryKey(index);
+  if (dictionaryPersistedKey === key) return;
+  dictionaryPersistedKey = key;
+  await writeJsonAtomic(REFERENCE_DICTIONARY_FILE(), dictionary);
+}
+
+async function writeReferenceDictionary(index) {
+  const dictionary = buildReferenceDictionary(index);
+  const key = referenceDictionaryKey(index);
+  keywordDictionaryCache = { key, dictionary };
+  persistedDictionary = dictionary;
+  dictionaryPersistedKey = key;
+  await writeJsonAtomic(REFERENCE_DICTIONARY_FILE(), dictionary);
+  return dictionary;
+}
+
 async function writeReferenceIndex(index) {
-  await writeJsonAtomic(REFERENCE_INDEX_FILE(), index);
+  const entries = capReferenceEntries(index.entries);
+  const next = { ...index, entries };
+  await writeJsonAtomic(REFERENCE_INDEX_FILE(), next);
+  // Persist the dictionary whenever the index reaches a stable state. During a
+  // progressive pass (complete === false) it is rebuilt at the end instead of
+  // writing a large file every 2.5 seconds.
+  if (next.complete !== false) await writeReferenceDictionary(next);
+  else keywordDictionaryCache = { key: "", dictionary: null };
   const notes = [
     "# Reference Index",
     "",
-    "Generated " + index.updatedAt,
+    "Generated " + next.updatedAt,
     "",
-    ...index.entries.slice(0, REFERENCE_INDEX_MAX_ENTRIES).map((entry) => {
+    ...entries.slice(0, 2000).map((entry) => {
       const location = entry.url || entry.path || "";
       return "- [" + entry.type + "] **" + entry.title + "** - " + location + "\n  " + (entry.summary || "");
     }),
+    ...(entries.length > 2000 ? ["", `... ${entries.length - 2000} more entries in reference-index.json`] : []),
   ].join("\n");
   await fs.writeFile(REFERENCE_NOTES_FILE(), notes, "utf8");
+  return next;
 }
 
 async function scanReferenceSources(settingsOverride, options = {}) {
@@ -9186,18 +10334,24 @@ async function scanReferenceSources(settingsOverride, options = {}) {
   referenceIndexProgress.startedAt = resumable ? existing.progress.startedAt : new Date().toISOString();
   referenceIndexProgress.lastError = "";
 
-  // Pending sources keep their previous entries visible until each one is
-  // re-scanned, so coverage never goes down during a pass.
-  const entries = (existing.entries || []).filter((entry) => !entry.sourceId || !doneIds.has(entry.sourceId));
+  // Keep the existing entries for this pass. Completed sources keep their
+  // flushed entries; pending sources are replaced one at a time inside
+  // scanSource (which deletes that source's old rows first). The old filter
+  // here dropped completed sources entirely, which is how folders disappeared
+  // from a resumed index.
+  const entries = [...(existing.entries || [])];
   let lastFlush = 0;
   const flush = async (force) => {
     const now = Date.now();
     if (!force && now - lastFlush < 2500) return;
     lastFlush = now;
     await writeJsonAtomic(REFERENCE_INDEX_FILE(), {
-      updatedAt: new Date().toISOString(),
+      // Do not move updatedAt on every progress flush: the UI polls this and
+      // would re-render the whole entry list every couple of seconds.
+      updatedAt: existing.updatedAt || new Date().toISOString(),
       signature,
-      entries: entries.slice(0, REFERENCE_INDEX_MAX_ENTRIES),
+      complete: false,
+      entries: capReferenceEntries(entries),
       progress: {
         running: true,
         done: referenceIndexProgress.done,
@@ -9209,7 +10363,12 @@ async function scanReferenceSources(settingsOverride, options = {}) {
     });
   };
 
-  const perFolder = Math.max(200, Math.min(2000, Math.floor(6000 / Math.max(1, folders.length))));
+  // Scale each folder's slice to the number of saved folders so a 600-folder
+  // library cannot materialise a million entries in memory before the cap runs.
+  const perFolder = Math.max(
+    12,
+    Math.min(800, Math.floor(REFERENCE_INDEX_LOCAL_BUDGET / Math.max(1, folders.length))),
+  );
   const scanSource = async (kind, source) => {
     if (doneIds.has(source.id)) return;
     referenceIndexProgress.current =
@@ -9246,7 +10405,10 @@ async function scanReferenceSources(settingsOverride, options = {}) {
   const index = {
     updatedAt: new Date().toISOString(),
     signature,
-    entries: entries.slice(0, REFERENCE_INDEX_MAX_ENTRIES),
+    complete: true,
+    entries: capReferenceEntries(entries),
+    indexedSourceIds: [...doneIds],
+    progress: { ...referenceProgressSnapshot(), running: false, doneIds: [] },
   };
   await writeReferenceIndex(index);
   referenceIndexProgress.running = false;
@@ -9264,7 +10426,8 @@ async function scanReferenceLinksOnly() {
   const index = {
     updatedAt: new Date().toISOString(),
     signature: referenceSourceSignature(settings),
-    entries: [...kept, ...entries].slice(0, REFERENCE_INDEX_MAX_ENTRIES),
+    complete: true,
+    entries: capReferenceEntries([...kept, ...entries]),
   };
   await writeReferenceIndex(index);
   return { index, links: links.length, urlEntries: entries.length };
@@ -9275,45 +10438,71 @@ const REFERENCE_MEDIA_EXT =
 const REFERENCE_MEDIA_QUERY =
   /(audio|sound|sfx|music|song|track|texture|image|photo|picture|model|mesh|animation|video|clip|asset|sprite|icon|font|material)/i;
 
+function expandSearchTerm(term) {
+  // Plural / tense mismatches were the main reason "faces" did not find a
+  // keyword indexed as "face". Match the obvious English variants without
+  // inflating the stored keyword dictionary.
+  const value = String(term || "").toLowerCase();
+  const out = [];
+  const add = (variant) => {
+    if (!variant || variant.length < 3 || out.includes(variant)) return;
+    out.push(variant);
+  };
+  add(value);
+  if (value.endsWith("ies") && value.length > 4) add(value.slice(0, -3) + "y");
+  if (/(?:ches|shes|sses|xes|zes)$/.test(value) && value.length > 4) add(value.slice(0, -2));
+  if (value.endsWith("s") && !value.endsWith("ss") && value.length > 3) add(value.slice(0, -1));
+  if (value.endsWith("ing") && value.length > 5) {
+    add(value.slice(0, -3));
+    add(value.slice(0, -3) + "e");
+  }
+  if (value.endsWith("ed") && value.length > 4) add(value.slice(0, -2));
+  return out;
+}
+
 function searchReferenceEntries(index, query, limit = 10, options = {}) {
-  // Manual Reference Library searches stay permissive; the automatic pre-flight
-  // briefing only keeps distinctive matches so it never distracts a coder.
   const strict = options.strict === true;
   const terms = tokenizeReference(query).filter((term) => !RESEARCH_STOPWORDS.has(term));
   if (!terms.length || !index?.entries?.length) return [];
   const mediaQuery = REFERENCE_MEDIA_QUERY.test(String(query || ""));
+  const phrase = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
   const items = index.entries.map((entry) => ({
     entry,
     title: String(entry.title || "").toLowerCase(),
     keywords: (entry.keywords || []).join(" ").toLowerCase(),
     location: String(entry.path || entry.url || "").toLowerCase(),
     summary: String(entry.summary || "").toLowerCase(),
-    text: String(entry.text || "").toLowerCase(),
+    // Only a short prefix is ever needed to prove a keyword hit. Copying and
+    // lowercasing every full 12 KB page body made a large index take seconds
+    // per search and blocked the whole server.
+    text: String(entry.text || "").toLowerCase().slice(0, 1200),
     media: REFERENCE_MEDIA_EXT.test(String(entry.path || entry.url || "")),
   }));
+  const expanded = terms.map((term) => expandSearchTerm(term));
   // Down-weight words that appear across the whole index ("game", "file") so a
   // rare project name outranks a common word in a song title.
   const documentFrequency = new Map();
-  for (const term of terms) {
+  expanded.forEach((variants, index) => {
     let count = 0;
     for (const item of items) {
       if (
-        item.title.includes(term) ||
-        item.keywords.includes(term) ||
-        item.location.includes(term) ||
-        item.summary.includes(term)
+        variants.some(
+          (variant) =>
+            item.title.includes(variant) ||
+            item.keywords.includes(variant) ||
+            item.location.includes(variant) ||
+            item.summary.includes(variant),
+        )
       ) {
-        count++;
+        count += 1;
       }
     }
-    documentFrequency.set(term, count);
-  }
-  // A distinctive word ("zombie", "three.js") is what proves an entry is
-  // related. Common words ("game", "player") match hundreds of unrelated files,
-  // so a multi-word coding prompt must hit at least one rare term.
-  const rareTerms = new Set(
-    terms.filter((term) => (documentFrequency.get(term) || 0) <= Math.max(20, items.length * 0.01)),
-  );
+    documentFrequency.set(index, count);
+  });
+  const rareTerms = new Set();
+  expanded.forEach((variants, index) => {
+    if ((documentFrequency.get(index) || 0) <= Math.max(20, items.length * 0.01)) rareTerms.add(index);
+  });
   const requireRare = terms.length > 2 && rareTerms.size > 0;
   const scored = [];
   for (const item of items) {
@@ -9324,30 +10513,39 @@ function searchReferenceEntries(index, query, limit = 10, options = {}) {
     let strong = false;
     let rareHit = false;
     const matchedTerms = [];
-    for (const term of terms) {
-      const weight = 1 / (1 + Math.log(1 + (documentFrequency.get(term) || 0)));
+    expanded.forEach((variants, index) => {
+      const weight = 1 / (1 + Math.log(1 + (documentFrequency.get(index) || 0)));
       let termScore = 0;
-      if (item.title.includes(term)) {
+      if (variants.some((variant) => item.title.includes(variant))) {
         termScore += 5;
         strong = true;
-        if (rareTerms.has(term)) rareHit = true;
+        if (rareTerms.has(index)) rareHit = true;
       }
-      if (item.keywords.includes(term)) {
+      if (variants.some((variant) => item.keywords.includes(variant))) {
         termScore += 3;
-        if (rareTerms.has(term)) rareHit = true;
+        if (rareTerms.has(index)) rareHit = true;
       }
-      if (item.location.includes(term)) {
+      if (variants.some((variant) => item.location.includes(variant))) {
         termScore += 2;
         strong = true;
-        if (rareTerms.has(term)) rareHit = true;
+        if (rareTerms.has(index)) rareHit = true;
       }
-      if (item.summary.includes(term)) termScore += 1;
-      if (item.text.includes(term)) termScore += 1;
-      if (termScore > 0) matchedTerms.push(term);
+      if (variants.some((variant) => item.summary.includes(variant))) termScore += 1;
+      if (variants.some((variant) => item.text.includes(variant))) termScore += 1;
+      if (termScore > 0) matchedTerms.push(terms[index]);
       score += termScore * weight;
+    });
+    if (score <= 0) continue;
+    // Strict mode is only for the automatic pre-flight briefing. A human
+    // search must be able to find a phrase that lives in a summary or body.
+    if (strict && (!strong || (requireRare && !rareHit))) continue;
+    if (
+      phrase.length > 3 &&
+      (item.title.includes(phrase) || item.keywords.includes(phrase) || item.summary.includes(phrase))
+    ) {
+      score += 6;
+      if (!strict) strong = true;
     }
-    if (!strong || score <= 0) continue;
-    if (strict && requireRare && !rareHit) continue;
     scored.push({ entry: item.entry, score, matchedTerms });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -9548,46 +10746,84 @@ const RESEARCH_STOPWORDS = new Set([
   "actually", "currently", "random", "application", "someone", "anyone", "nobody",
 ]);
 
+// Meta-words that dominate a prompt ABOUT the app but are useless as search keys
+// against a large reference index ("fix", "issue", "central" ...). Domain words
+// like editor/engine/face/line/snap/sketchup are deliberately NOT here: those
+// genuinely live in the index and should still surface.
+const RESEARCH_META_STOPWORDS = new Set([
+  "app", "applet", "central", "fix", "fixes", "fixed", "fixing", "issue", "issues",
+  "bug", "bugs", "problem", "problems", "behave", "behaves", "behavior", "behaviour",
+  "feeling", "feel", "exactly", "identical", "identically", "properly", "perfectly",
+  "perfect", "serious", "seriously", "critical", "critically", "extremely", "insanely",
+  "really", "true", "truly", "deep", "deeply", "complete", "completely", "fully",
+  "whole", "entire", "entirely", "rewrite", "clone", "merge", "port", "match",
+  "matches", "matching", "version", "need", "needs", "needed", "want", "wants",
+  "wanted", "back", "better", "best", "way", "ways", "thing", "things", "stuff",
+  "able", "please", "help", "request", "prompt", "currently", "instead", "lots",
+  "lot", "much", "many", "tons", "ton", "bunch", "several", "various",
+]);
+
 function researchTerms(input, limit = 12) {
   const raw = String(input || "").replace(/```[\s\S]*?```/g, " ");
-  const counts = new Map();
-  const first = new Map();
-  const order = [];
-  const add = (token, position) => {
-    const term = String(token || "").toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
-    if (!term) return;
-    if (term.length <= 2 && !SIGNIFICANT_SHORT_TERMS.has(term)) return;
-    if (RESEARCH_STOPWORDS.has(term)) return;
-    if (!counts.has(term)) {
-      counts.set(term, 0);
-      first.set(term, position);
-      order.push(term);
-    }
-    counts.set(term, counts.get(term) + 1);
+  const out = [];
+  const seen = new Set();
+  const push = (term) => {
+    const t = String(term || "").toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
+    if (!t) return;
+    if (t.length <= 2 && !SIGNIFICANT_SHORT_TERMS.has(t)) return;
+    if (RESEARCH_STOPWORDS.has(t) || RESEARCH_META_STOPWORDS.has(t)) return;
+    if (seen.has(t)) return;
+    seen.add(t);
+    out.push(t);
   };
+
+  // 1. Quoted / backtick phrases are the most precise signal of the real topic.
+  for (const m of raw.matchAll(/[`"']([^`"']{3,40})[`"']/g)) {
+    if (/\s/.test(m[1])) push(m[1]);
+  }
+  // 2. snake_case / kebab identifiers that name a real symbol in the dump
+  //    ("orient_faces", "compute_snap", "edge_grid").
+  for (const m of raw.matchAll(/\b[a-z0-9]+(?:[_-][a-z0-9]+){1,3}\b/gi)) {
+    push(m[0]);
+  }
+
+  // 3. Significant words with their positions, camelCase split.
+  const words = [];
+  const positions = [];
   let position = 0;
   for (const token of raw.split(/[^a-z0-9_+#.:-]+/i)) {
-    position += 1;
     if (!token) continue;
-    // Keep the full token (internal "-" / "_" preserved) so hyphenated
-    // concepts like "pre-flight" survive, then add each part too so a prompt
-    // word like "faces" still matches an identifier like "rebuildFaces".
-    add(token, position);
-    const expanded = token.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
-    for (const part of expanded.split(/[^a-zA-Z0-9]+/)) add(part, position);
+    const pieces = String(token)
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .split(/[^a-zA-Z0-9]+/)
+      .map((p) => p.toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, ""))
+      .filter(Boolean);
+    for (const piece of pieces) {
+      if (piece.length <= 2 && !SIGNIFICANT_SHORT_TERMS.has(piece)) continue;
+      if (RESEARCH_STOPWORDS.has(piece)) continue;
+      words.push(piece);
+      positions.push(position);
+    }
+    position += 1;
   }
-  const scored = order.map((term) => {
-    const freq = counts.get(term) || 1;
-    const pos = first.get(term) || 0;
-    // Repeats and longer words are the strongest signals of the real topic;
-    // position is only a gentle tiebreaker so a distinctive late word still
-    // outranks a generic early one.
-    const lengthBoost = 1 + Math.min(term.length, 12) * 0.07;
-    const score = (freq + 0.4) * lengthBoost * (1 + 0.4 / (4 + pos * 0.15));
-    return { term, score };
-  });
-  scored.sort((a, b) => b.score - a.score || a.term.localeCompare(b.term));
-  return scored.slice(0, Math.max(1, limit)).map((item) => item.term);
+
+  // 4. Bigrams of adjacent significant words are real phrases ("reference
+  //    index", "snap point", "face line") and far more precise than one word.
+  for (let i = 0; i < words.length - 1; i += 1) {
+    const adjacent = positions[i + 1] - positions[i] <= 1;
+    const aOk = !RESEARCH_META_STOPWORDS.has(words[i]);
+    const bOk = !RESEARCH_META_STOPWORDS.has(words[i + 1]);
+    if (adjacent && aOk && bOk) push(words[i] + " " + words[i + 1]);
+  }
+
+  // 5. Single significant words last, so phrases/identifiers always lead.
+  // Include the obvious stem ("faces" -> "face", "snapping" -> "snap") so the
+  // same prompt matches singular keywords and GitHub repository names.
+  for (const word of words) {
+    for (const variant of expandSearchTerm(word)) push(variant);
+  }
+
+  return out.slice(0, Math.max(1, limit));
 }
 
 const REFERENCE_SCOPE_TYPES = {
@@ -9600,14 +10836,10 @@ async function referencePreflight(text, limit = 10) {
   try {
     const index = await loadReferenceIndex();
     const updatedAt = index.updatedAt || null;
-    const age = updatedAt ? Date.now() - new Date(updatedAt).getTime() : Infinity;
-    const stale = !Number.isFinite(age) || age > REFERENCE_INDEX_TTL;
-    // A coding prompt should never wait on a crawl, but it should also never
-    // trust a cold index. Search what exists and top the index up in the
-    // background for the next prompt.
-    if (stale) scheduleReferenceIndex(400);
-    const entries = index.entries || [];
     const settings = await getSettings().catch(() => null);
+    const signature = settings ? referenceSourceSignature(settings) : "";
+    const stale = !referenceIndexIsFresh(index, signature);
+    const entries = index.entries || [];
     const coverage = settings ? referenceIndexCoverage(index, settings) : null;
     const counts = {
       total: entries.length,
@@ -9764,6 +10996,13 @@ function buildPreflightBriefing(text, local, remote, elapsedMs) {
   const lines = [
     "# Pre-flight research (already completed for this prompt)",
     "The studio searched the local Reference Library, the URL/documentation index, the GitHub knowledge index and public GitHub before you were called. Read this briefing before your first command, file write or file edit.",
+    "",
+    "| Scope | Searchable | Matched |",
+    "| --- | ---: | ---: |",
+    "| Local folders & files | " + (local.counts?.local ?? 0) + " | " + (local.local?.length || 0) + " |",
+    "| Documentation URLs | " + (local.counts?.url ?? 0) + " | " + (local.urls?.length || 0) + " |",
+    "| GitHub knowledge | " + (local.counts?.github ?? 0) + " | " + (local.github?.length || 0) + " |",
+    "| Public GitHub | live | " + remote.repositories.length + " repos, " + remote.code.length + " code hits |",
   ];
   const counts = {
     references: local.matches.length,
@@ -9787,13 +11026,7 @@ function buildPreflightBriefing(text, local, remote, elapsedMs) {
   };
 
   // Index snapshot: what was actually searchable when this prompt ran.
-  lines.push(
-    "",
-    "## Index snapshot",
-    "- Local folders & files: " + (local.counts?.local ?? 0) + " entries searched, " + (local.local?.length || 0) + " matched",
-    "- Documentation URLs: " + (local.counts?.url ?? 0) + " entries searched, " + (local.urls?.length || 0) + " matched",
-    "- GitHub knowledge: " + (local.counts?.github ?? 0) + " entries searched, " + (local.github?.length || 0) + " matched",
-  );
+  lines.push("", "## Index health");
   if (local.coverage) {
     const complete = local.coverage.sourcesIndexed >= local.coverage.sourcesTotal;
     lines.push(
@@ -10182,7 +11415,17 @@ app.get("/api/references/status", async (req, res) => {
         links: settings.references?.links?.length || 0,
       },
       coverage: referenceIndexCoverage(index, settings),
-      ttlMs: REFERENCE_INDEX_TTL,
+      dictionary: (() => {
+        const dictionary = keywordDictionaryCache.dictionary || persistedDictionary;
+        if (!dictionary || !Array.isArray(dictionary.list)) return null;
+        return {
+          keywords: dictionary.totalKeywords || dictionary.list.length,
+          connections: dictionary.totalConnections || 0,
+          updatedAt: dictionary.updatedAt || null,
+        };
+      })(),
+      persisted: true,
+      ttlMs: null,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -10292,7 +11535,52 @@ app.get("/api/references/search", async (req, res) => {
 app.get("/api/references/index", async (req, res) => {
   try {
     const index = await loadReferenceIndex();
-    res.json({ ok: true, updatedAt: index.updatedAt, count: index.entries?.length || 0, entries: (index.entries || []).slice(0, 300) });
+    const all = index.entries || [];
+    const limit = Math.max(1, Math.min(300, Number(req.query.limit || 200)));
+    const offset = Math.max(0, Number(req.query.offset || 0));
+    const scope = String(req.query.scope || "all").toLowerCase();
+    const types =
+      scope === "local"
+        ? REFERENCE_SCOPE_TYPES.local
+        : scope === "url"
+          ? REFERENCE_SCOPE_TYPES.url
+          : scope === "github"
+            ? REFERENCE_SCOPE_TYPES.github
+            : null;
+    const filtered = types ? all.filter((entry) => types.includes(entry.type)) : all;
+    const typeCounts = all.reduce((out, entry) => {
+      out[entry.type] = (out[entry.type] || 0) + 1;
+      return out;
+    }, {});
+    // A slim projection only: the renderer never needs the full body text or the
+    // keyword list, and shipping them for hundreds of entries at once was what
+    // black-screened the Index tab during a re-index. Pagination bounds the DOM.
+    const slim = filtered.slice(offset, offset + limit).map((entry) => ({
+      id: entry.id,
+      type: entry.type,
+      title: entry.title,
+      path: entry.path,
+      url: entry.url,
+      folderId: entry.folderId,
+      folderLabel: entry.folderLabel,
+      linkId: entry.linkId,
+      linkLabel: entry.linkLabel,
+      summary: entry.summary,
+      bytes: entry.bytes,
+      updatedAt: entry.updatedAt,
+    }));
+    res.json({
+      ok: true,
+      updatedAt: index.updatedAt,
+      complete: index.complete !== false,
+      scope,
+      count: filtered.length,
+      total: all.length,
+      typeCounts,
+      offset,
+      limit,
+      entries: slim,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -10301,47 +11589,23 @@ app.get("/api/references/index", async (req, res) => {
 app.get("/api/references/keywords", async (req, res) => {
   try {
     const index = await loadReferenceIndex();
-    const entries = index.entries || [];
     const query = String(req.query.q || "").toLowerCase().trim();
-    const limit = Math.max(1, Math.min(1000, Number(req.query.limit || 300)));
+    const limit = Math.max(1, Math.min(400, Number(req.query.limit || 300)));
     const offset = Math.max(0, Number(req.query.offset || 0));
-    // Aggregate every indexed keyword into a dictionary of term -> entry count
-    // with a per-scope breakdown (local folders/files, URLs, GitHub). A term
-    // that maps to many entries is a busy topic; a rare term is a precise
-    // discriminator the AI and the user can lean on for manual lookup.
-    const map = new Map();
-    for (const entry of entries) {
-      const keywords = entry.keywords || [];
-      const seen = new Set();
-      const scope = REFERENCE_SCOPE_TYPES.local.includes(entry.type)
-        ? "local"
-        : REFERENCE_SCOPE_TYPES.url.includes(entry.type)
-          ? "url"
-          : "github";
-      for (const keyword of keywords) {
-        const term = String(keyword).toLowerCase();
-        if (!term || seen.has(term)) continue;
-        seen.add(term);
-        let record = map.get(term);
-        if (!record) {
-          record = { term, count: 0, local: 0, url: 0, github: 0 };
-          map.set(term, record);
-        }
-        record.count += 1;
-        record[scope] += 1;
-      }
-    }
-    let list = [...map.values()];
-    if (query) list = list.filter((record) => record.term.includes(query));
-    list.sort((a, b) => b.count - a.count || a.term.localeCompare(b.term));
-    const totalKeywords = list.length;
-    const totalConnections = list.reduce((sum, record) => sum + record.count, 0);
+    // The dictionary is aggregated once per index version, not on every
+    // keystroke. The old per-request scan of millions of keywords was what
+    // locked the process while the renderer waited.
+    const dictionary = keywordDictionaryFor(index);
+    void ensureDictionaryPersisted(index, dictionary).catch(() => null);
+    const source = query ? dictionary.list.filter((record) => record.term.includes(query)) : dictionary.list;
     res.json({
       ok: true,
       updatedAt: index.updatedAt,
-      totalKeywords,
-      totalConnections,
-      keywords: list.slice(offset, offset + limit),
+      totalKeywords: source.length,
+      totalConnections: source.reduce((sum, record) => sum + record.count, 0),
+      allKeywords: dictionary.list.length,
+      allConnections: dictionary.totalConnections,
+      keywords: source.slice(offset, offset + limit),
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -14200,7 +15464,9 @@ bootLog("project and reference directories ready");
 bootLog("example mod ready");
 
 // Index saved reference folders and links as soon as the app boots. The
-// signature check keeps a warm index from being crawled again.
+// signature check keeps a warm index from being crawled again, and the saved
+// dictionary is loaded from disk so keyword search works immediately.
+await loadPersistedReferenceDictionary().catch(() => null);
 scheduleReferenceIndex(2500);
 
 const httpServer = server.listen(PORT, "127.0.0.1", () => {
